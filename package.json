@@ -1,0 +1,12 @@
+{
+  "name": "remote-hand",
+  "version": "0.0.1",
+  "description": "Lets agents on one Mac run shell commands on another Mac through a Paseo relay.",
+  "license": "Apache-2.0",
+  "private": true,
+  "engines": { "node": ">=20.19.0" },
+  "dependencies": {
+    "@getpaseo/client": "0.17.3",
+    "ssh2": "1.17.0"
+  }
+}
