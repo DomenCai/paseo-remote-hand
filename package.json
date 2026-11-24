@@ -9,7 +9,7 @@
     "node": ">=20.19.0"
   },
   "scripts": {
-    "test": "node --test server/*.test.ts server/hand-tools/*.test.ts",
+    "test": "node --test server/*.test.ts server/hand-tools/*.test.ts server/provider/*.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json"
   },
   "dependencies": {
