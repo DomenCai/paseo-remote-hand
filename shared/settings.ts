@@ -115,11 +115,11 @@ export const brains = {
     input: brainIdentity.extend({ name: nameInput }),
     output: noOutput,
   }),
-  // 成功时本机的设备身份也已在该 brain 上撤销。
+  // 始终移除本地身份；remoteRevoked 表示 brain 已确认远端身份不再有效。
   remove: defineRpc({
     name: "brains.remove",
     input: brainIdentity,
-    output: noOutput,
+    output: z.object({ remoteRevoked: z.boolean() }),
   }),
   setPolicy: defineRpc({
     name: "brains.set-policy",

@@ -1,12 +1,26 @@
 {
   "name": "remote-hand",
   "version": "0.0.1",
-  "description": "Lets agents on one Mac run shell commands on another Mac through a Paseo relay.",
+  "description": "Connects Remote hand devices through a dedicated Paseo relay endpoint.",
   "license": "Apache-2.0",
   "private": true,
+  "type": "module",
   "engines": { "node": ">=20.19.0" },
+  "scripts": {
+    "test": "node --test server/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
     "@getpaseo/client": "0.17.3",
-    "ssh2": "1.17.0"
+    "@getpaseo/protocol": "0.17.3",
+    "@getpaseo/relay": "0.17.3",
+    "ws": "^8.23.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "0.17.3",
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.9.3"
   }
 }

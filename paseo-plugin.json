@@ -1,7 +1,16 @@
 {
   "id": "remote-hand",
   "name": "Remote hand",
-  "description": "Lets agents on one Mac run shell commands on another Mac through a Paseo relay.",
-  "requirements": { "paseo": ">=0.17.3 <0.18.0" },
-  "build": [["npm", "ci", "--omit=dev", "--ignore-scripts"]]
+  "description": "Connects Remote hand devices through a dedicated Paseo relay endpoint.",
+  "requirements": {
+    "paseo": ">=0.17.3 <0.18.0"
+  },
+  "build": [
+    [
+      "npm",
+      "ci",
+      "--omit=dev",
+      "--ignore-scripts"
+    ]
+  ]
 }
