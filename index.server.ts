@@ -29,6 +29,16 @@ const activate = defineRpc({
 });
 const heartbeat = defineRpc({ name: "heartbeat", input: round, output: z.boolean() });
 const frameRpc = defineRpc({ name: "frame", input: bytes, output: z.boolean() });
+const task = z.object({
+  prompt: z.string().trim().min(1),
+  handCwd: z.string().refine((path) => isAbsolute(path) && !/[\x00-\x1f\x7f]/.test(path),
+    "Expected an absolute project path on one line"),
+  model: z.string().min(1).optional(),
+  modeId: z.string().min(1).optional(),
+});
+const agentRef = z.object({ workspaceId: z.string(), agentId: z.string() });
+const handoff = defineRpc({ name: "handoff", input: round.extend(task.shape), output: agentRef });
+const submit = defineRpc({ name: "submit", input: task, output: agentRef });
 const quiet = { debug() {}, info() {}, warn() {}, error() {} };
 const log = (event: string, fields: object = {}) => console.log(JSON.stringify({ event, ...fields }));
 type Pipe = ReturnType<typeof bridge>;
@@ -82,9 +92,25 @@ function atomicWrite(path: string, contents: string) {
 
 const wireToken = (generation: string) => Buffer.from(generation.replaceAll("-", ""), "hex");
 
+const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+
+function remoteSystemPrompt(config: string, handCwd: string) {
+  return `你在 brain 上运行，正在替另一台 Mac（hand）处理项目。brain 的当前 workspace 只是占位目录，不是项目。
+所有项目文件的读取、写入和项目命令都必须通过 Bash 调用以下多行 SSH 写法。here-doc 第一行必须是 cd：
+
+ssh -F ${shellQuote(config)} mac-local /bin/zsh -f -s <<'EOF'
+cd -- ${shellQuote(handCwd)} || exit 1
+# 在这里写 hand 上要执行的命令
+EOF
+
+传输文件使用 scp -F ${shellQuote(config)} 和 mac-local。不要用本地文件工具或本地命令直接操作项目。
+如果 SSH 以 255 退出或连接中断，任务结果为“未知”：向用户报告，不要自动重跑非幂等命令。`;
+}
+
 function brain(server: PluginServerContext) {
   const root = privateDir(join(privateDir(base), "ssh"));
   type Session = Round & {
+    handServerId: string;
     token: Buffer;
     sockets: Map<number, Pipe>;
     dir: string;
@@ -126,7 +152,7 @@ function brain(server: PluginServerContext) {
       const clientPublicKey = publicKey.parse(readFileSync(join(staging, "identity.pub"), "utf8").trim());
       renameSync(staging, keys);
       const timer = setTimeout(() => stop(s, "handshake-timeout"), 25000);
-      const s = current = { session, generation, token: wireToken(generation), dir, keys,
+      const s = current = { session, generation, handServerId, token: wireToken(generation), dir, keys,
         sockets: new Map(), timer };
       return { session, generation, clientPublicKey };
     } finally {
@@ -183,6 +209,8 @@ function brain(server: PluginServerContext) {
   HostName 127.0.0.1
   Port ${port}
   User device
+  IgnoreUnknown WarnWeakCrypto
+  WarnWeakCrypto no
   IdentityFile ${join(s.keys, "identity")}
   IdentitiesOnly yes
   IdentityAgent none
@@ -214,10 +242,40 @@ function brain(server: PluginServerContext) {
     s.sockets.get(frame.id)?.receive(frame);
     return true;
   });
+
+  server.handle(handoff, async ({ prompt, handCwd, model, modeId, ...binding }, { paseo }) => {
+    const { config, handServerId } = expect(binding);
+    if (!config) throw new Error("Relay listener not active");
+
+    const { modes, error } = await paseo.providers.listModes("claude");
+    if (error) throw new Error(error);
+    const available = new Set(modes?.map(({ id }) => id));
+    modeId ??= ["auto", "default"].find((id) => available.has(id));
+    if (!modeId || !available.has(modeId))
+      throw new Error("No suitable Claude mode; choose an available mode explicitly");
+
+    if (!model) {
+      const { models, error } = await paseo.providers.listModels("claude");
+      if (error) throw new Error(error);
+      const selectable = models?.filter((entry) => entry.isSelectable !== false);
+      model = (selectable?.find((entry) => entry.isDefault) ?? selectable?.[0])?.id;
+      if (!model) throw new Error("No selectable Claude model");
+    }
+
+    expect(binding);
+    const dir = privateDir(join(privateDir("/tmp/remote-hand-poc3"), `remote-hand-${handServerId}`));
+    const workspace = await paseo.workspaces.open(dir);
+    expect(binding);
+    const agent = await workspace.agents.create({
+      config: { provider: `claude/${model}`, modeId, systemPrompt: remoteSystemPrompt(config, handCwd) },
+      prompt,
+    });
+    return { workspaceId: workspace.id, agentId: agent.id };
+  });
   return () => { if (current) stop(current, "brain-stopped"); };
 }
 
-function hand({ pairing, handServerId, workerPath }: z.infer<typeof handConfig>) {
+function hand(server: PluginServerContext, { pairing, handServerId, workerPath }: z.infer<typeof handConfig>) {
   const target = parseHostTarget(pairing);
   if (target.kind !== "socket" || !target.offer || !target.url.startsWith("wss:") ||
       !pairing.startsWith("relay://"))
@@ -238,6 +296,7 @@ function hand({ pairing, handServerId, workerPath }: z.infer<typeof handConfig>)
   let worker: ReturnType<typeof fork> | undefined;
   let dir: string | undefined;
   let lease: ReturnType<typeof setTimeout> | undefined;
+  let active: Round | undefined;
   let stage = "connect";
   const release = client.subscribeConnectionStatus(({ status }) => {
     if (status === "disconnected" || status === "disposed") stop("relay-disconnected");
@@ -256,6 +315,10 @@ function hand({ pairing, handServerId, workerPath }: z.infer<typeof handConfig>)
   }
 
   const invoke = (method: string, input: unknown) => client.invokePluginRpc(id, method, input);
+  server.handle(submit, async (input) => {
+    if (!active || stopped.signal.aborted || !client.isConnected) throw new Error("Relay is not ready");
+    return agentRef.parse(await invoke(handoff.name, { ...input, ...active }));
+  });
   const send: Send = async (frame) => {
     if (stopped.signal.aborted || !client.isConnected) throw new Error("Relay disconnected");
     return invoke(frameRpc.name, frame);
@@ -344,6 +407,7 @@ function hand({ pairing, handServerId, workerPath }: z.infer<typeof handConfig>)
     if (await invoke(activate.name, { ...binding, hostPublicKey }) !== true)
       throw new Error("Relay activation rejected");
     stopped.signal.throwIfAborted();
+    active = binding;
     stage = "ready";
     log("hand-ready", { pid: process.pid, worker: child.pid, window: WINDOW });
 
@@ -370,5 +434,5 @@ function hand({ pairing, handServerId, workerPath }: z.infer<typeof handConfig>)
 export default function contribute(server: PluginServerContext) {
   const config = readHandConfig();
   log("plugin-loaded", { pid: process.pid, role: config ? "hand" : "brain" });
-  return config ? hand(config) : brain(server);
+  return config ? hand(server, config) : brain(server);
 }

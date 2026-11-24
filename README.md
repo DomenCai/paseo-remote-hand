@@ -76,7 +76,19 @@ ssh -F "$cfg" mac-local 'whoami; pwd'
 scp -F "$cfg" ./example.txt mac-local:example.txt
 ```
 
-SSH 会返回 hand 上命令的退出码。连接中断时，现有 SSH 会话会结束，命令的最终结果可能未知。需要恢复时，先确认 brain 插件正常，再在 hand 上执行 `paseo plugin reload remote-hand` 并等待新的 `hand-ready`；重新配对不会重放命令。brain 的 SSH 密钥会在握手时轮换，请使用当前配置。
+SSH 会返回 hand 上命令的退出码。连接中断时，现有 SSH 会话会结束，命令的最终结果可能未知。需要恢复时，先确认 brain 插件正常，再在 hand 上执行 `paseo plugin reload remote-hand` 并等待新的 `hand-ready`；重新配对不会重放命令。同一个 hand 的 SSH 配置路径固定，握手时会轮换密钥并更新配置。
+
+## 把任务交给远端 Claude
+
+配对并出现 `hand-ready` 后，在 **hand** 上运行：
+
+```sh
+node "$plugin_dir/dev/handoff.mjs" --cwd "$plugin_dir" '读取 README.md 的第一行并报告。不要修改项目文件。'
+```
+
+`--cwd` 默认为当前目录。可以用 `--model <id>` 或 `--mode <id>` 指定 brain 上的 Claude 模型或权限模式；省略时由 brain 选择可用模型，模式优先用 `auto`，其次用 `default`（可能需要用户批准工具调用）。在 brain 上用 `paseo provider ls` 和 `paseo provider models claude` 查看当前选项。
+
+脚本返回 `workspaceId` 和 `agentId`。agent 在 brain 的 Claude provider 上运行，工作区是 brain 上按 hand 标识隔离的占位目录；项目操作通过 relay 上的 SSH 在 hand 执行。继续追问时，在 Paseo App 中切到 brain 并打开该会话，或在 brain 上执行 `paseo send <agentId> '下一条任务'`。如果 SSH 中断，先确认命令的实际结果，再决定是否重试；同一台 hand 重连后，可在原会话里发新任务。
 
 ## 卸载
 
@@ -91,7 +103,7 @@ SSH 会返回 hand 上命令的退出码。连接中断时，现有 SSH 会话�
 
 ## 已知问题
 
-- 新版 OpenSSH 可能警告连接未使用后量子密钥交换；插件使用的 `ssh2` 1.17.0 不支持这类密钥交换。
+- 插件使用的 `ssh2` 1.17.0 不支持后量子密钥交换。生成的配置只为 `mac-local` 关闭 OpenSSH 的相关提示，不改变实际协商的算法。
 - brain 的 SSH 配置和密钥目前放在 `/tmp` 的私有目录中；重启或系统清理临时目录后，可能需要重新配对。hand 的配对文件也在 `/tmp`。
 - PoC 一次只为一个 hand 提供连接；新的握手会替换 brain 上的旧会话。
 
