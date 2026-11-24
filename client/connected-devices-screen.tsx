@@ -73,30 +73,33 @@ export function ConnectedDevicesScreen({ theme, layout, host }: PluginSurfacePro
   const paseo = usePaseo();
   const queryClient = useQueryClient();
 
-  const getEndpoint = useRpc(endpoint.get);
   const setRelay = useRpc(endpoint.setRelay);
   const revokeDevice = useRpc(devices.revoke);
   const getAccess = useRpc(access.get);
   const setAccess = useRpc(access.set);
 
-  // 1. 本机端点状态与 relay 地址
-  const endpointQueryKey = useMemo(() => ["remote-hand", host.id, "endpoint"] as const, [host.id]);
-  const endpointQuery = useQuery({
-    queryKey: endpointQueryKey,
-    queryFn: () => getEndpoint(EMPTY_INPUT),
-  });
+  // 1. 本机端点状态与 relay 地址（通过 endpoint.watch 实时推送）
+  const [endpointData, setEndpointData] = useState<Endpoint | null>(null);
+  const onEndpointEvent = useCallback((next: Endpoint) => {
+    setEndpointData(next);
+  }, []);
+  const endpointSub = useSubscription(endpoint.watch, EMPTY_INPUT, onEndpointEvent);
 
   const relayInputRef = useRef<SettingsInputHandle>(null);
+  const lastSyncedRelayRef = useRef<string | null>(null);
   const [relayDraft, setRelayDraft] = useState<string>(DEFAULT_RELAY);
   const [relayDirty, setRelayDirty] = useState(false);
   const [relayError, setRelayError] = useState<string | null>(null);
   const [savingRelay, setSavingRelay] = useState(false);
+  const [switchedRelay, setSwitchedRelay] = useState<string | null>(null);
 
+  const endpointRelay = endpointData?.relay ?? null;
   useEffect(() => {
-    if (!endpointQuery.data || relayDirty) return;
-    setRelayDraft(endpointQuery.data.relay);
-    relayInputRef.current?.replaceText(endpointQuery.data.relay);
-  }, [endpointQuery.data, relayDirty]);
+    if (!endpointRelay || relayDirty || lastSyncedRelayRef.current === endpointRelay) return;
+    lastSyncedRelayRef.current = endpointRelay;
+    setRelayDraft(endpointRelay);
+    relayInputRef.current?.replaceText(endpointRelay);
+  }, [endpointRelay, relayDirty]);
 
   const handleSaveRelay = useCallback(async () => {
     const parsed = RelayAddressSchema.safeParse(relayDraft);
@@ -108,11 +111,12 @@ export function ConnectedDevicesScreen({ theme, layout, host }: PluginSurfacePro
     setSavingRelay(true);
     try {
       await setRelay({ relay: parsed.data });
+      lastSyncedRelayRef.current = parsed.data;
       setRelayDraft(parsed.data);
       relayInputRef.current?.replaceText(parsed.data);
       setRelayDirty(false);
+      setSwitchedRelay(parsed.data);
       toast.show(t("connectedDevices.relaySaved"), { variant: "success" });
-      await queryClient.invalidateQueries({ queryKey: endpointQueryKey });
     } catch (err) {
       const msg = errorMessage(err);
       setRelayError(msg);
@@ -120,25 +124,27 @@ export function ConnectedDevicesScreen({ theme, layout, host }: PluginSurfacePro
     } finally {
       setSavingRelay(false);
     }
-  }, [endpointQueryKey, queryClient, relayDraft, setRelay, t, toast]);
+  }, [relayDraft, setRelay, t, toast]);
 
   const handleResetOfficialRelay = useCallback(() => {
     setRelayDraft(DEFAULT_RELAY);
     relayInputRef.current?.replaceText(DEFAULT_RELAY);
-    setRelayDirty(endpointQuery.data ? DEFAULT_RELAY !== endpointQuery.data.relay : true);
+    setRelayDirty(endpointRelay ? DEFAULT_RELAY !== endpointRelay : true);
     setRelayError(null);
-  }, [endpointQuery.data]);
+  }, [endpointRelay]);
 
-  const handleCopyFingerprint = useCallback(async () => {
-    const fingerprint = endpointQuery.data?.fingerprint;
-    if (!fingerprint) return;
-    try {
-      await copyText(fingerprint);
-      toast.show(t("common.copied"), { variant: "success" });
-    } catch {
-      toast.error(t("common.copyFailed"));
-    }
-  }, [endpointQuery.data?.fingerprint, t, toast]);
+  const handleCopyText = useCallback(
+    async (value: string | undefined) => {
+      if (!value) return;
+      try {
+        await copyText(value);
+        toast.show(t("common.copied"), { variant: "success" });
+      } catch {
+        toast.error(t("common.copyFailed"));
+      }
+    },
+    [t, toast],
+  );
 
   // 2. 已连接设备列表订阅与撤销
   const [deviceList, setDeviceList] = useState<Device[]>([]);
@@ -293,8 +299,8 @@ export function ConnectedDevicesScreen({ theme, layout, host }: PluginSurfacePro
     );
   }, [accessDirty, accessQuery.data, allowAllProviders, maxConcurrentDraft, selectedProviders]);
 
-  const relayHasChanges = endpointQuery.data
-    ? relayDraft.trim() !== endpointQuery.data.relay
+  const relayHasChanges = endpointRelay
+    ? relayDraft.trim() !== endpointRelay
     : relayDirty;
 
   const riskMessages = useMemo(() => {
@@ -302,51 +308,100 @@ export function ConnectedDevicesScreen({ theme, layout, host }: PluginSurfacePro
       t("connectedDevices.fixedRiskNativeTools"),
       t("connectedDevices.fixedRiskSharedSessions"),
     ];
-    for (const risk of endpointQuery.data?.risks ?? []) {
+    for (const risk of endpointData?.risks ?? []) {
       items.push(risk.message);
     }
     return items;
-  }, [endpointQuery.data?.risks, t]);
+  }, [endpointData?.risks, t]);
 
   return (
     <View style={styles.root}>
-      <SettingsSection
-        title={t("connectedDevices.endpointSection")}
-        trailing={
-          <ActionButton
-            label={t("common.refresh")}
-            icon="RotateCw"
-            theme={theme}
-            variant="outline"
-            compact
-            disabled={endpointQuery.isFetching}
-            onPress={() => void endpointQuery.refetch()}
-          />
-        }
-      >
-        {endpointQuery.isError ? (
+      <SettingsSection title={t("connectedDevices.endpointSection")}>
+        {endpointSub.status === "error" ? (
           <NoticeBox
             tone="danger"
             icon="AlertTriangle"
             items={[
-              t("connectedDevices.endpointLoadError", {
-                message: errorMessage(endpointQuery.error),
+              t("connectedDevices.endpointWatchError", {
+                message: endpointSub.error.message,
               }),
             ]}
             theme={theme}
           />
         ) : null}
 
+        {endpointSub.status === "closed" ? (
+          <NoticeBox
+            tone="warning"
+            icon="Info"
+            items={[t("connectedDevices.endpointWatchClosed")]}
+            theme={theme}
+          />
+        ) : null}
+
+        {endpointData?.lastError ? (
+          <NoticeBox
+            tone="danger"
+            icon="AlertTriangle"
+            title={t("connectedDevices.lastErrorLabel")}
+            items={[endpointData.lastError]}
+            theme={theme}
+          />
+        ) : null}
+
+        {switchedRelay ? (
+          <NoticeBox
+            tone="warning"
+            icon="Info"
+            title={t("connectedDevices.relaySwitchedTitle")}
+            items={[t("connectedDevices.relaySwitchedNotice")]}
+            theme={theme}
+          >
+            <View style={styles.switchedRelayRow}>
+              <Text
+                selectable
+                style={[
+                  styles.switchedRelayAddress,
+                  {
+                    color: theme.colors.foreground,
+                    backgroundColor: theme.colors.surface2,
+                    borderColor: theme.colors.border,
+                  },
+                ]}
+              >
+                {switchedRelay}
+              </Text>
+              <View style={styles.inlineActions}>
+                <ActionButton
+                  label={t("connectedDevices.copyNewRelay")}
+                  icon="Copy"
+                  theme={theme}
+                  variant="outline"
+                  compact
+                  onPress={() => void handleCopyText(switchedRelay)}
+                />
+                <ActionButton
+                  label={t("common.close")}
+                  theme={theme}
+                  variant="outline"
+                  compact
+                  onPress={() => setSwitchedRelay(null)}
+                />
+              </View>
+            </View>
+          </NoticeBox>
+        ) : null}
+
         <SettingsCard>
           <SettingsRow label={t("connectedDevices.statusLabel")}>
-            {endpointQuery.isPending ? (
+            {!endpointData && endpointSub.status === "connecting" ? (
               <Text style={[styles.mutedText, { color: theme.colors.foregroundMuted }]}>
-                {t("common.loading")}
+                {t("connectedDevices.endpointConnecting")}
               </Text>
-            ) : endpointQuery.data ? (
+            ) : endpointData ? (
               <StatusBadge
-                label={t(endpointStatusKey(endpointQuery.data.status))}
-                tone={endpointStatusTone(endpointQuery.data.status)}
+                label={t(endpointStatusKey(endpointData.status))}
+                tone={endpointStatusTone(endpointData.status)}
                 theme={theme}
               />
             ) : (
@@ -358,7 +413,7 @@ export function ConnectedDevicesScreen({ theme, layout, host }: PluginSurfacePro
             ref={relayInputRef}
             label={t("connectedDevices.relayLabel")}
             hint={t("connectedDevices.relayHint", { defaultRelay: DEFAULT_RELAY })}
-            initialValue={endpointQuery.data?.relay ?? DEFAULT_RELAY}
+            initialValue={endpointRelay ?? DEFAULT_RELAY}
             placeholder={t("connectedDevices.relayPlaceholder")}
             error={relayError}
             disabled={savingRelay}
@@ -399,7 +454,7 @@ export function ConnectedDevicesScreen({ theme, layout, host }: PluginSurfacePro
                 numberOfLines={1}
                 style={[styles.fingerprintText, { color: theme.colors.foregroundMuted }]}
               >
-                {endpointQuery.data?.fingerprint ?? "—"}
+                {endpointData?.fingerprint ?? "—"}
               </Text>
               <ActionButton
                 label={t("common.copy")}
@@ -407,8 +462,8 @@ export function ConnectedDevicesScreen({ theme, layout, host }: PluginSurfacePro
                 theme={theme}
                 variant="outline"
                 compact
-                disabled={!endpointQuery.data?.fingerprint}
-                onPress={() => void handleCopyFingerprint()}
+                disabled={!endpointData?.fingerprint}
+                onPress={() => void handleCopyText(endpointData?.fingerprint)}
               />
             </View>
           </SettingsRow>
@@ -725,6 +780,18 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flexWrap: "wrap",
     gap: 8,
+  },
+  switchedRelayRow: {
+    gap: 8,
+    marginTop: 2,
+  },
+  switchedRelayAddress: {
+    fontSize: 13,
+    fontFamily: "monospace",
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
   fingerprintRow: {
     flexDirection: "row",
