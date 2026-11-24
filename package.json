@@ -5,21 +5,26 @@
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20.19.0" },
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
-    "test": "node --test server/*.test.ts",
+    "test": "node --test server/*.test.ts server/hand-tools/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@getpaseo/client": "0.17.3",
     "@getpaseo/protocol": "0.17.3",
     "@getpaseo/relay": "0.17.3",
+    "picomatch": "^4.0.7",
+    "re2js": "^2.10.0",
     "ws": "^8.23.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@getpaseo/plugin": "0.17.3",
     "@types/node": "^24.0.0",
+    "@types/picomatch": "^4.0.3",
     "@types/ws": "^8.5.0",
     "typescript": "^5.9.3"
   }
