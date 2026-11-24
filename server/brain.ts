@@ -6,7 +6,8 @@ import { BrainOsSchema, type Access, type BrainPreview, type Device, type Endpoi
 import {
   brainFingerprint, DeviceProofSchema, digest, encodePairCode, INVITE_TTL_MS, randomToken, verifyDevice,
 } from "./identity.ts";
-import { type Peer, ProtocolError, validate } from "./protocol.ts";
+import { ProtocolError, validate } from "./frames.ts";
+import type { ConnectionPort, Peer } from "./protocol.ts";
 import { startRelay } from "./relay.ts";
 import { Snapshots } from "./snapshots.ts";
 import type { StateStore } from "./state.ts";
@@ -54,8 +55,11 @@ function description(relay: string): BrainPreview {
 export class BrainService {
   #stopRelay?: () => void;
   #status: Endpoint["status"] = "disconnected";
+  #lastError?: string;
+  #changingRelay = false;
   #peers = new Map<string, Set<Peer>>();
   readonly snapshots = new Snapshots(() => this.devices());
+  readonly endpointSnapshots = new Snapshots(() => this.endpoint());
 
   readonly #store: StateStore;
   readonly #now: () => number;
@@ -71,7 +75,11 @@ export class BrainService {
     this.#stopRelay = startRelay(target, {
       publicKey: importPublicKey(target.publicKeyB64),
       secretKey: importSecretKey(target.secretKeyB64),
-    }, (peer) => this.accept(peer), (status) => { this.#status = status; });
+    }, (peer) => this.accept(peer), (status, lastError) => {
+      this.#status = status;
+      this.#lastError = lastError;
+      this.endpointSnapshots.changed();
+    });
   }
 
   stop(): void {
@@ -80,17 +88,35 @@ export class BrainService {
 
   endpoint(): Endpoint {
     const { relay, serverId, publicKeyB64 } = this.#store.current.endpoint;
-    return { relay, serverId, fingerprint: brainFingerprint(publicKeyB64), status: this.#status, risks: description(relay).risks };
+    return {
+      relay, serverId, fingerprint: brainFingerprint(publicKeyB64), status: this.#status,
+      ...(this.#lastError === undefined ? {} : { lastError: this.#lastError }),
+      risks: description(relay).risks,
+    };
   }
 
-  setRelay(relay: string): void {
+  async setRelay(relay: string): Promise<void> {
+    if (this.#changingRelay) throw new Error("A relay switch is already in progress.");
     if (relay === this.#store.current.endpoint.relay) return;
-    this.#store.update((state) => {
-      state.endpoint.relay = relay;
-      // 旧配对码绑定旧 relay，切换后不允许用旧邀请完成登记。
-      state.invites = {};
-    });
-    this.start();
+    this.#changingRelay = true;
+    try {
+      const online = [...this.#peers.values()].flatMap((peers) => [...peers]);
+      // 保留旧连接，直到在线设备确认写入新地址，或通知超时。
+      await Promise.allSettled(online.map((peer) => peer.request("relay.move", { relay }, 2_000)));
+      this.#store.update((state) => {
+        state.endpoint.relay = relay;
+        state.invites = {};
+      });
+      this.start();
+    } finally {
+      this.#changingRelay = false;
+    }
+  }
+
+  port(deviceId: string): ConnectionPort | undefined {
+    for (const peer of this.#peers.get(deviceId) ?? []) {
+      if (peer.port) return peer.port;
+    }
   }
 
   invite(label?: string): { pairingCode: string; expiresAt: string } {
@@ -149,6 +175,7 @@ export class BrainService {
         return { challenge: challenge.nonce };
       }
       if (!deviceId && !attempted && (method === "auth.pair" || method === "auth.resume")) {
+        if (this.#changingRelay) throw new ProtocolError("busy");
         attempted = true;
         if (!challenge || this.#now() >= challenge.expires) throw new ProtocolError("identity");
         const pair = method === "auth.pair" ? validate(PairSchema, payload) : undefined;
@@ -177,6 +204,7 @@ export class BrainService {
         let peers = this.#peers.get(id);
         if (!peers) this.#peers.set(id, peers = new Set());
         peers.add(peer);
+        peer.activate("brain");
         this.snapshots.changed();
         return { deviceId: id };
       }

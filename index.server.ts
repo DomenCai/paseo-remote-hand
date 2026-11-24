@@ -10,7 +10,8 @@ export default function contribute(server: PluginServerContext) {
   const hand = new HandService(state);
 
   server.handle(endpoint.get, () => brain.endpoint());
-  server.handle(endpoint.setRelay, ({ relay }) => { brain.setRelay(relay); return null; });
+  server.handle(endpoint.watch, (_, context) => brain.endpointSnapshots.watch(context));
+  server.handle(endpoint.setRelay, async ({ relay }) => { await brain.setRelay(relay); return null; });
   server.handle(devices.invite, ({ label }) => brain.invite(label));
   server.handle(devices.revoke, ({ deviceId }) => { brain.revoke(deviceId); return null; });
   server.handle(devices.watch, (_, context) => brain.snapshots.watch(context));
@@ -22,6 +23,7 @@ export default function contribute(server: PluginServerContext) {
     hand.add(pairingCode, name, acknowledgedRiskCodes));
   server.handle(brains.rename, ({ brainId, name }) => { hand.rename(brainId, name); return null; });
   server.handle(brains.remove, ({ brainId }) => hand.remove(brainId));
+  server.handle(brains.setRelay, ({ brainId, relay }) => { hand.setRelay(brainId, relay); return null; });
   server.handle(brains.setPolicy, ({ brainId, policy }) => { hand.setPolicy(brainId, policy); return null; });
   server.handle(brains.revokeProject, ({ brainId, root }) => { hand.revokeProject(brainId, root); return null; });
   server.handle(brains.watch, (_, context) => hand.snapshots.watch(context));

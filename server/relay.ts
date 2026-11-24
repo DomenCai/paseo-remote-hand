@@ -3,7 +3,8 @@ import { openClientSecureChannel, openDaemonSecureChannel, type SecureChannel, t
 import { WebSocket } from "ws";
 import { z } from "zod";
 import type { Target } from "./identity.ts";
-import { MAX_FRAME_BYTES, Peer, ProtocolError } from "./protocol.ts";
+import { ProtocolError } from "./frames.ts";
+import { MAX_FRAME_BYTES, Peer } from "./protocol.ts";
 
 type DaemonKey = Parameters<typeof openDaemonSecureChannel>[1]["daemonKeyPair"];
 type Transport = Parameters<typeof openDaemonSecureChannel>[0];
@@ -125,13 +126,14 @@ export function startRelay(
   target: Target,
   daemonKeyPair: DaemonKey,
   accept: (peer: Peer) => void,
-  status: (value: EndpointStatus) => void,
+  status: (value: EndpointStatus, lastError?: string) => void,
 ): () => void {
   const data = new Map<string, WebSocket>();
   let control: WebSocket | undefined;
   let retry: NodeJS.Timeout | undefined;
   let attempt = 0;
   let stopped = false;
+  let lastError: string | undefined;
 
   function attach(id: string) {
     if (data.has(id)) return;
@@ -142,16 +144,28 @@ export function startRelay(
   }
 
   function connect() {
-    status("connecting");
+    status("connecting", lastError);
     const socket = control = relaySocket(target, "server");
+    let registered = false;
     let lastSeen = Date.now();
-    const ready = setTimeout(() => socket.terminate(), 10_000);
+    let failure: string | undefined;
+    const disconnect = (reason: string) => {
+      failure ??= reason;
+      socket.terminate();
+    };
+    const ready = setTimeout(() => disconnect("Relay registration timed out waiting for sync."), 10_000);
     const keepalive = setInterval(() => {
       if (socket.readyState !== WebSocket.OPEN) return;
-      if (Date.now() - lastSeen > CONTROL_STALE_MS) socket.terminate();
+      if (Date.now() - lastSeen > CONTROL_STALE_MS) disconnect("Relay did not answer keepalive.");
       else socket.ping();
     }, 10_000);
-    socket.on("error", () => socket.terminate());
+    socket.on("error", (error) => {
+      const code = (error as NodeJS.ErrnoException).code;
+      const httpStatus = /^Unexpected server response: (\d{3})$/.exec(error.message)?.[1];
+      disconnect(httpStatus ? `Relay registration failed (HTTP ${httpStatus}).` :
+        code && /^[A-Z0-9_]+$/.test(code) ? `Relay connection failed (${code}).` :
+        "Relay connection failed.");
+    });
     socket.on("pong", () => { lastSeen = Date.now(); });
     socket.on("message", (raw, binary) => {
       if (stopped || binary) return;
@@ -167,7 +181,11 @@ export function startRelay(
         const live = new Set(msg.connectionIds);
         for (const [id, conn] of data) if (!live.has(id)) conn.terminate();
         for (const id of live) attach(id);
-        status("connected");
+        if (!registered) {
+          registered = true;
+          lastError = undefined;
+          status("connected");
+        }
       } else if (msg.type === "connected") {
         attach(msg.connectionId);
       } else if (msg.type === "disconnected") {
@@ -176,11 +194,12 @@ export function startRelay(
         socket.send(JSON.stringify({ type: "pong" }));
       }
     });
-    socket.once("close", () => {
+    socket.once("close", (code) => {
       clearInterval(keepalive);
       clearTimeout(ready);
       if (stopped) return;
-      status("disconnected");
+      lastError = failure ?? (registered ? `Relay disconnected (WebSocket ${code}).` : "Relay disconnected before registration.");
+      status("disconnected", lastError);
       retry = setTimeout(connect, reconnectDelay(attempt++));
     });
   }

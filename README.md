@@ -1,6 +1,6 @@
 # Remote hand
 
-Remote hand 是 Paseo 插件。**hand** 是保存项目的本机，**brain** 是运行 agent 的机器；每台机器可以同时承担两种角色。当前 M0 提供独立 relay 端点、一次性配对、设备重连和撤销。远端 agent 与本机工具执行由后续阶段接入。
+Remote hand 是 Paseo 插件。**hand** 是保存项目的本机，**brain** 是运行 agent 的机器；每台机器可以同时承担两种角色。当前提供独立 relay 端点、一次性配对、设备重连、撤销和 relay 切换。远端 agent 与本机工具执行由后续阶段接入。
 
 两端通过插件自己的 relay 端点建立 protected Noise 通道。默认使用 `relay.paseo.sh:443`，自建 relay 需提供同样的 v2 协议和有效 TLS。无需启用 Paseo daemon 的 relay，也无需交换 daemon 配对链接。配对码五分钟内有效，只能使用一次；通过私密渠道交给预期设备。
 
@@ -50,7 +50,13 @@ paseo plugin install "$PWD"
 
 `brains.remove` 删除本地设备密钥和 brain 记录，并尝试撤销远端身份。返回 `remoteRevoked: false` 时，本地已移除，但远端撤销仍未获得确认，可在 brain 的设备列表上再撤销。
 
-brain 可用 `node dev/rpc.mjs endpoint.set-relay '{"relay":"relay.example.com:443"}'` 切换 relay。已有端点密钥和设备身份保留，未使用的旧邀请失效。hand 持有旧地址时，先在 brain 撤销旧的设备登记，再在 hand 移除旧条目，用新邀请重新配对。
+brain 可用 `node dev/rpc.mjs endpoint.set-relay '{"relay":"relay.example.com:443"}'` 切换 relay。切换前会通知在线的 hand 保存新地址并自动重连；已有端点密钥和设备身份保留，未使用的旧邀请失效。运行 `node dev/watch.mjs endpoint.watch` 查看注册状态；注册失败时，可从快照的 `lastError` 查看原因。
+
+切换时离线的 hand 可以从 brain 复制新 `host:port`，保留现有身份手动重连：
+
+```sh
+node dev/rpc.mjs brains.set-relay '{"brainId":"<brainId>","relay":"relay.example.com:443"}'
+```
 
 ## 状态与开发
 

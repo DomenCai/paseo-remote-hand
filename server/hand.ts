@@ -2,15 +2,17 @@ import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import {
-  BrainPreviewSchema, RISKS_NOT_ACKNOWLEDGED, type Brain, type BrainPolicy, type BrainPreview,
+  BrainPreviewSchema, RelayAddressSchema, RISKS_NOT_ACKNOWLEDGED, type Brain, type BrainPolicy, type BrainPreview,
 } from "../shared/settings.ts";
 import { brainFingerprint, newDeviceKey, parsePairCode, signDevice } from "./identity.ts";
-import { type Peer, ProtocolError, validate } from "./protocol.ts";
+import { ProtocolError, validate } from "./frames.ts";
+import type { ConnectionPort, Peer } from "./protocol.ts";
 import { connectBrain, reconnectDelay } from "./relay.ts";
 import { Snapshots } from "./snapshots.ts";
 import type { StateStore, StoredBrain } from "./state.ts";
 
 const challengeSchema = z.object({ challenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/) });
+const relayMoveSchema = z.object({ relay: RelayAddressSchema });
 const deviceIdSchema = z.object({ deviceId: z.string().regex(/^[0-9a-f]{64}$/) });
 type View = Pick<Brain, "status" | "transport" | "lastError">;
 type Slot = { stop: AbortController; view: View; peer?: Peer };
@@ -94,13 +96,18 @@ export class HandService {
         throw new Error(RISKS_NOT_ACKNOWLEDGED);
       const key = newDeviceKey();
       const proof = signDevice(key, brainId, await challenge(peer), inviteSecret);
-      validate(deviceIdSchema, await peer.request("auth.pair", {
+      const paired = peer;
+      const admitted = peer.request("auth.pair", {
         ...proof, secret: inviteSecret, name: (hostname() || "Remote hand").slice(0, 255), acknowledgedRiskCodes,
-      }));
-      this.#store.update((state) => {
-        state.brains[brainId] = { ...target, name, os: description.os, policy: "restricted", projects: [], key, revoked: false };
+      }).then((result) => {
+        validate(deviceIdSchema, result);
+        this.#store.update((state) => {
+          state.brains[brainId] = { ...target, name, os: description.os, policy: "restricted", projects: [], key, revoked: false };
+        });
+        this.#startBrain(brainId, paired);
       });
-      this.#startBrain(brainId, peer);
+      this.#watchMoves(peer, brainId, admitted);
+      await admitted;
       peer = undefined; // 已配对连接交给连接管理器，避免再做一次握手。
       return { brainId };
     } catch (error) {
@@ -118,6 +125,16 @@ export class HandService {
 
   setPolicy(brainId: string, policy: BrainPolicy): void {
     this.#update(brainId, (brain) => { brain.policy = policy; });
+  }
+
+  setRelay(brainId: string, relay: string): void {
+    if (this.#brain(brainId).relay === relay) return;
+    this.#store.update((state) => { state.brains[brainId].relay = relay; });
+    this.#startBrain(brainId);
+  }
+
+  port(brainId: string): ConnectionPort | undefined {
+    return this.#slots.get(brainId)?.peer?.port;
   }
 
   revokeProject(brainId: string, root: string): void {
@@ -159,9 +176,35 @@ export class HandService {
     this.snapshots.changed();
   }
 
+  #watchMoves(peer: Peer, brainId: string, admitted: Promise<void>): void {
+    peer.serve(async (method, payload, afterReply) => {
+      if (method !== "relay.move") throw new ProtocolError("invalid");
+      const { relay } = validate(relayMoveSchema, payload);
+      await admitted;
+      const slot = this.#slots.get(brainId);
+      if (!slot || slot.peer !== peer || peer.failure) throw new ProtocolError("disconnected");
+      if (this.#brain(brainId).relay !== relay) {
+        this.#store.update((state) => { state.brains[brainId].relay = relay; });
+        // ACK 只有在落盘后才发送，新连接只能在旧连接写完 ACK 后开始。
+        afterReply(() => {
+          if (this.#slots.get(brainId) === slot) this.#startBrain(brainId);
+        });
+      }
+      return null;
+    });
+  }
+
   #startBrain(brainId: string, paired?: Peer): void {
+    const old = this.#slots.get(brainId);
+    this.#slots.delete(brainId);
+    old?.stop.abort();
+    old?.peer?.close();
     const brain = this.#brain(brainId);
-    if (brain.revoked) return;
+    if (brain.revoked || this.#stop.signal.aborted) {
+      paired?.close();
+      this.snapshots.changed();
+      return;
+    }
     const slot: Slot = {
       stop: new AbortController(), view: { status: "connecting", transport: null },
     };
@@ -180,18 +223,24 @@ export class HandService {
       let peer: Peer | undefined;
       let failure: ProtocolError;
       try {
+        const connected = (link: Peer) => {
+          if (!active()) throw new ProtocolError("disconnected");
+          if (link.failure) throw link.failure;
+          slot.peer = link;
+          link.activate("hand");
+          slot.view = { status: "connected", transport: "relay" };
+          this.snapshots.changed();
+        };
         if (paired) {
           peer = paired;
           paired = undefined;
+          connected(peer);
         } else {
-          peer = connectBrain(brain, signal);
-          await resume(peer, brain);
+          const link = peer = connectBrain(brain, signal);
+          const admitted = resume(link, brain).then(() => connected(link));
+          this.#watchMoves(link, brainId, admitted);
+          await admitted;
         }
-        if (!active()) return;
-        if (peer.failure) throw peer.failure;
-        slot.peer = peer;
-        slot.view = { status: "connected", transport: "relay" };
-        this.snapshots.changed();
         retries = 0;
         failure = await maintain(peer);
       } catch (error) {
