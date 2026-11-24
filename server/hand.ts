@@ -7,6 +7,7 @@ import {
 import { brainFingerprint, newDeviceKey, parsePairCode, signDevice } from "./identity.ts";
 import { ProtocolError, validate } from "./frames.ts";
 import type { ConnectionPort, Peer } from "./protocol.ts";
+import { remoteRequest } from "./remote-agent-stream.ts";
 import { connectBrain, reconnectDelay } from "./relay.ts";
 import { Snapshots } from "./snapshots.ts";
 import type { StateStore, StoredBrain } from "./state.ts";
@@ -14,7 +15,7 @@ import type { StateStore, StoredBrain } from "./state.ts";
 const challengeSchema = z.object({ challenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/) });
 const relayMoveSchema = z.object({ relay: RelayAddressSchema });
 const deviceIdSchema = z.object({ deviceId: z.string().regex(/^[0-9a-f]{64}$/) });
-type View = Pick<Brain, "status" | "transport" | "lastError">;
+type View = Pick<Brain, "status" | "transport" | "lastError" | "models">;
 type Slot = { stop: AbortController; view: View; peer?: Peer };
 
 async function challenge(peer: Peer): Promise<string> {
@@ -26,13 +27,14 @@ async function resume(peer: Peer, brain: StoredBrain): Promise<void> {
   validate(deviceIdSchema, await peer.request("auth.resume", proof));
 }
 
-async function maintain(peer: Peer): Promise<ProtocolError> {
+async function maintain(peer: Peer, afterPing: () => void): Promise<ProtocolError> {
   const stop = new AbortController();
   void peer.closed.then(() => stop.abort());
   try {
     while (!stop.signal.aborted) {
       await delay(15_000, undefined, { signal: stop.signal });
       await peer.request("ping", null, 5_000);
+      afterPing();
     }
   } catch (error) {
     if (!stop.signal.aborted) peer.close(error instanceof ProtocolError ? error : undefined);
@@ -137,6 +139,35 @@ export class HandService {
     return this.#slots.get(brainId)?.peer?.port;
   }
 
+  readPolicy(brainId: string): { mode: "full" } | { mode: "restricted"; projects: string[] } {
+    const brain = this.#brain(brainId);
+    if (brain.revoked) throw new ProtocolError("revoked");
+    return brain.policy === "full" ? { mode: "full" } :
+      { mode: "restricted", projects: brain.projects.map(({ root }) => root) };
+  }
+
+  authorizeProject(brainId: string, root: string): void {
+    const brain = this.#brain(brainId);
+    if (brain.revoked) throw new ProtocolError("revoked");
+    if (brain.projects.some((project) => project.root === root)) return;
+    this.#update(brainId, (record) => { record.projects.push({ root, grantedAt: new Date().toISOString() }); });
+  }
+
+  async #loadModels(brainId: string, slot: Slot, port: ConnectionPort): Promise<void> {
+    try {
+      const catalog = await remoteRequest(port, "agent.catalog", {}, port.signal);
+      if (this.#slots.get(brainId) !== slot || slot.peer?.port !== port || port.signal.aborted) return;
+      const models = catalog.providers.flatMap((provider) => provider.models.map((model) => ({
+        id: `${brainId}/${provider.id}/${model.id}`, label: `${provider.label} · ${model.label}`,
+      })));
+      if (JSON.stringify(slot.view.models) === JSON.stringify(models)) return;
+      slot.view = { ...slot.view, models };
+      this.snapshots.changed();
+    } catch {
+      // 目录暂不可用时保留连接，下一次心跳后再尝试。
+    }
+  }
+
   revokeProject(brainId: string, root: string): void {
     this.#update(brainId, (brain) => { brain.projects = brain.projects.filter((project) => project.root !== root); });
   }
@@ -230,6 +261,7 @@ export class HandService {
           link.activate("hand");
           slot.view = { status: "connected", transport: "relay" };
           this.snapshots.changed();
+          if (link.port) void this.#loadModels(brainId, slot, link.port);
         };
         if (paired) {
           peer = paired;
@@ -242,7 +274,8 @@ export class HandService {
           await admitted;
         }
         retries = 0;
-        failure = await maintain(peer);
+        const port = peer.port;
+        failure = await maintain(peer, () => { if (port) void this.#loadModels(brainId, slot, port); });
       } catch (error) {
         failure = error instanceof ProtocolError ? error : new ProtocolError("disconnected");
       } finally {

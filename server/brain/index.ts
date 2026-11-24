@@ -90,6 +90,8 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
 }) {
   if (!path.isAbsolute(paseoHome)) throw new Error("paseoHome must be an absolute brain path.");
   const links = new Map<string, { port: RemoteAgentPort; signal: AbortSignal; close: () => void }>();
+  const activeTools = new Map<string, Set<AbortController>>();
+  const stopping = new Set<string>();
 
   async function openHook({ request }: PluginHookPayload<"agent.open.before">): Promise<PluginSessionOpenRequest | undefined> {
     const owner = ownerSchema.safeParse(request.metadata[ownerKey]);
@@ -100,7 +102,13 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
       async execute(input, { signal }) {
         const link = links.get(owner.data.deviceId);
         if (!link || link.signal.aborted) return { text: "The hand is disconnected. Wait for it to reconnect.", isError: true };
-        const callSignal = AbortSignal.any([signal, link.signal]);
+        const agentId = request.agentId;
+        if (stopping.has(agentId)) return { text: "Tool execution cancelled.", isError: true };
+        const stop = new AbortController();
+        const calls = activeTools.get(agentId) ?? new Set<AbortController>();
+        calls.add(stop);
+        activeTools.set(agentId, calls);
+        const callSignal = AbortSignal.any([signal, link.signal, stop.signal]);
         try {
           for await (const message of link.port.open(
             "tool.call", toRemoteJson({ agentId: request.agentId, name: definition.name, input }), callSignal,
@@ -108,16 +116,20 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
             callSignal.throwIfAborted();
             const event = remoteToolEvents.parse(message);
             if (event.type === "result") {
-              return { text: event.text, isError: event.isError, structuredContent: event.structured };
+              // Claude 可能只读取结构化回包；读取正文等内容在 text 中。
+              return { text: event.text, isError: event.isError };
             }
           }
           throw new Error("The hand ended the tool stream without returning a result.");
         } catch (error) {
           return {
-            text: signal.aborted ? "Tool execution cancelled." :
+            text: signal.aborted || stop.signal.aborted ? "Tool execution cancelled." :
               `Tool result is unknown; do not automatically retry a write, edit or command. ${errorMessage(error)}`,
             isError: true,
           };
+        } finally {
+          calls.delete(stop);
+          if (!calls.size) activeTools.delete(agentId);
         }
       },
     }));
@@ -125,7 +137,7 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
   }
 
   function attach({ deviceId, paseo, access, port }: {
-    deviceId: string; paseo: BrainApi; access: BrainAccess; port: RemoteAgentPort;
+    deviceId: string; paseo: BrainApi | (() => Promise<BrainApi>); access: BrainAccess; port: RemoteAgentPort;
   }) {
     ownerSchema.shape.deviceId.parse(deviceId);
     port.signal.throwIfAborted();
@@ -144,9 +156,11 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
     links.set(deviceId, link);
     port.signal.addEventListener("abort", close, { once: true });
 
+    const getPaseo = () => typeof paseo === "function" ? paseo() : paseo;
+
     async function owned(agentId: string, callSignal: AbortSignal) {
       callSignal.throwIfAborted();
-      const agent = paseo.agents.ref(agentId);
+      const agent = (await getPaseo()).agents.ref(agentId);
       const result = await agent.refresh();
       callSignal.throwIfAborted();
       const owner = ownerSchema.safeParse(result?.agent.metadata?.[ownerKey]);
@@ -167,8 +181,9 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
     }
 
     try {
-      handle("agent.catalog", async () => catalog(paseo, access));
+      handle("agent.catalog", async () => catalog(await getPaseo(), access));
       handle("agent.create", async (input, callSignal) => {
+        const paseo = await getPaseo();
         const provider = (await catalog(paseo, access)).providers.find(({ id }) => id === input.provider);
         if (!provider || !provider.models.some(({ id }) => id === input.model)) throw new Error("The requested provider and model are not available to this device.");
         const modeId = input.modeId ?? provider.defaultMode ??
@@ -195,8 +210,15 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
       });
       handle("agent.cancel", async ({ agentId }, callSignal) => {
         await owned(agentId, callSignal);
-        await cancelAgent(agentId);
-        return {};
+        // 0.17.3 停止 Claude 时未必取消已经发出的 MCP 工具请求。
+        stopping.add(agentId);
+        try {
+          for (const tool of activeTools.get(agentId) ?? []) tool.abort();
+          await cancelAgent(agentId);
+          return {};
+        } finally {
+          stopping.delete(agentId);
+        }
       });
       handle("agent.permission", async ({ agentId, permissionId, response }, callSignal) => {
         const agent = await owned(agentId, callSignal);

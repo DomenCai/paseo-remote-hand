@@ -1,12 +1,12 @@
 # Remote hand
 
-Remote hand 是 Paseo 插件。**hand** 是保存项目的本机，**brain** 是运行 agent 的机器；每台机器可以同时承担两种角色。当前提供独立 relay 端点、一次性配对、设备重连、撤销和 relay 切换。远端 agent 与本机工具执行由后续阶段接入。
+Remote hand 是 Paseo 插件。**hand** 是保存项目的本机，**brain** 是运行 agent 的机器；每台机器可以同时承担两种角色。在 hand 上选择 `remote-hand`，Claude 会话在 brain 运行，项目读写和命令由 hand 的工具执行。
 
 两端通过插件自己的 relay 端点建立 protected Noise 通道。默认使用 `relay.paseo.sh:443`，自建 relay 需提供同样的 v2 协议和有效 TLS。无需启用 Paseo daemon 的 relay，也无需交换 daemon 配对链接。配对码五分钟内有效，只能使用一次；通过私密渠道交给预期设备。
 
 ## 安装
 
-两端都安装 Paseo 0.17.3 并启用插件。在插件目录执行：
+两端都安装 Paseo 0.17.3 并启用插件。brain 需要能在 Paseo 内运行已登录的 Claude，并启用 daemon 的 MCP、向 agent 注入 MCP，以及 Claude 的 Paseo Tools（`config.json` 中的 `agents.providers.claude.paseoTools.enabled` 不能为 `false`，也不能在 `disabledTools` 中禁用 `hand_*`）。在插件目录执行：
 
 ```sh
 npm ci --omit=dev --ignore-scripts
@@ -57,6 +57,47 @@ brain 可用 `node dev/rpc.mjs endpoint.set-relay '{"relay":"relay.example.com:4
 ```sh
 node dev/rpc.mjs brains.set-relay '{"brainId":"<brainId>","relay":"relay.example.com:443"}'
 ```
+
+## 使用
+
+1. 在 hand 上运行 `paseo provider models remote-hand`，复制一个形如 `<brainId>/claude/<model>` 的模型 ID。也可在 `node dev/watch.mjs brains.watch --once` 的 `models` 中查看。
+2. 从 hand 的项目目录发起会话。例如：
+
+   ```sh
+   paseo run --no-wait --new-workspace local --provider remote-hand \
+     --model '<brainId>/claude/<model>' --cwd "$PWD" \
+     '读取 README 第一行，然后运行 ls，报告结果'
+   ```
+
+   加 `--new-workspace local` 会按指定目录新建 workspace。省略这个选项时，Paseo 可能沿用当前 agent 或终端的 workspace。
+3. 用命令返回的 **hand agent ID** 查看时间线、等待或停止；如果出现权限请求，用对应请求 ID 应答。
+
+   ```sh
+   paseo wait <agentId>
+   paseo logs <agentId>
+   paseo stop <agentId>
+   paseo permit ls
+   paseo permit allow <agentId> <requestId>
+   ```
+
+受限档是默认值。新会话会授权该项目的真实路径，文件工具只可访问已授权项目，`hand_bash` 被拒绝。需要在 hand 运行命令时，可以把该 brain 切为完全档：
+
+```sh
+node dev/rpc.mjs brains.set-policy '{"brainId":"<brainId>","policy":"full"}'
+```
+
+完全档允许该 brain 通过 hand 工具访问运行 daemon 的用户能访问的文件和 shell。只对信任的 brain 启用。要恢复受限档，把 `policy` 改回 `restricted`。
+
+## 卸载
+
+1. 在 hand 使用 `brains.remove` 移除各 brain。若远端撤销未确认，在对应 brain 用 `devices.revoke` 撤销。
+2. 在各机器执行 `paseo plugin remove remote-hand`。插件状态目录会保留，以便重新安装时复用身份。
+
+## 已知问题
+
+- M1a 只暴露 Claude。Brain 的原生工具仍可用；系统提示要求用 `hand_*` 操作项目，但模型可能仍调用 brain 原生工具。受限档约束的是 hand 的工具。
+- 目录和工具输出走 relay；普通请求和开流参数有 128 KiB 帧上限。断线时正在执行的写入或命令可能结果未知，先核对项目和时间线再重试。
+- 最大设备并发数目前可保存，在这一阶段尚不限制任务。其他 provider 尚未验收。
 
 ## 状态与开发
 

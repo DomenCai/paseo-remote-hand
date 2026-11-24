@@ -63,10 +63,12 @@ export class BrainService {
 
   readonly #store: StateStore;
   readonly #now: () => number;
+  readonly #attach?: (deviceId: string, port: ConnectionPort) => void;
 
-  constructor(store: StateStore, now = Date.now) {
+  constructor(store: StateStore, now = Date.now, attach?: (deviceId: string, port: ConnectionPort) => void) {
     this.#store = store;
     this.#now = now;
+    this.#attach = attach;
   }
 
   start(): void {
@@ -205,6 +207,7 @@ export class BrainService {
         if (!peers) this.#peers.set(id, peers = new Set());
         peers.add(peer);
         peer.activate("brain");
+        if (peer.port) this.#attach?.(id, peer.port);
         this.snapshots.changed();
         return { deviceId: id };
       }

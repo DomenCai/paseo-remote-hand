@@ -377,6 +377,16 @@ test("brain ↔ hand loopback: prompts, hand tools, permissions, stop, reconnect
   assert.deepEqual(pair.opened, ["agent.events"]);
   assert.equal(grants, 1);
 
+  const stopMarker = path.join(cwd, "stop-in-flight.txt");
+  const stopCommand = process.platform === "win32"
+    ? "Add-Content -LiteralPath stop-in-flight.txt -Value run; Start-Sleep -Seconds 30"
+    : "printf 'run' > stop-in-flight.txt; /bin/sleep 30";
+  // 不用 mock 的 provider signal：真实 Claude 停止时可以留下未取消的 MCP 请求。
+  const runningTool = tool("hand_bash", { command: stopCommand, timeout_ms: 5_000 });
+  await awaitFile(stopMarker);
+  await pair.hand.request("agent.cancel", { agentId });
+  assert.match((await runningTool).text!, /Tool execution cancelled/);
+
   projects.clear();
   full = false;
   await connection.send({ type: "session.close", requestId: "close", sessionId: "local-session" });
