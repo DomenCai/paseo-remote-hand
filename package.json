@@ -15,10 +15,12 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@getpaseo/plugin": "0.17.3",
     "@types/node": "^20.19.43",
     "@types/picomatch": "^4.0.3"
   },
   "scripts": {
-    "test:hand-tools": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test server/hand-tools/hand-tools.test.ts"
+    "test:hand-tools": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test server/hand-tools/hand-tools.test.ts",
+    "test:remote-agent": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test server/provider/remote-agent.test.ts"
   }
 }
