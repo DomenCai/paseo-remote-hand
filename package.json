@@ -4,9 +4,21 @@
   "description": "Lets agents on one Mac run shell commands on another Mac through a Paseo relay.",
   "license": "Apache-2.0",
   "private": true,
-  "engines": { "node": ">=20.19.0" },
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "dependencies": {
     "@getpaseo/client": "0.17.3",
-    "ssh2": "1.17.0"
+    "picomatch": "^4.0.7",
+    "re2js": "^2.10.0",
+    "ssh2": "1.17.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/picomatch": "^4.0.3"
+  },
+  "scripts": {
+    "test:hand-tools": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test server/hand-tools/hand-tools.test.ts"
   }
 }
