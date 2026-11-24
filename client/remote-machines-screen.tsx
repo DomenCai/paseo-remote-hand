@@ -38,6 +38,8 @@ export function RemoteMachinesScreen({ theme, layout }: PluginSurfaceProps) {
     ? items.find((item) => item.brainId === selectedBrainId) ?? null
     : null;
 
+  const handleBack = useCallback(() => setSelectedBrainId(null), []);
+
   // 如果正在查看的机器已被移除，自动回到列表页。
   useEffect(() => {
     if (selectedBrainId && hasSnapshot && !selectedBrain) {
@@ -48,9 +50,10 @@ export function RemoteMachinesScreen({ theme, layout }: PluginSurfaceProps) {
   if (selectedBrain) {
     return (
       <BrainDetailView
+        key={selectedBrain.brainId}
         brain={selectedBrain}
         theme={theme}
-        onBack={() => setSelectedBrainId(null)}
+        onBack={handleBack}
       />
     );
   }

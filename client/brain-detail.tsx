@@ -12,7 +12,14 @@ import {
 } from "@getpaseo/plugin/client/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { brains, type Brain, type BrainPolicy, type BrainStatus } from "../shared/settings";
+import {
+  brains,
+  DEFAULT_RELAY,
+  RelayAddressSchema,
+  type Brain,
+  type BrainPolicy,
+  type BrainStatus,
+} from "../shared/settings";
 import {
   brainStatusKey,
   errorMessage,
@@ -22,6 +29,7 @@ import {
   osLabelKey,
 } from "./messages";
 import {
+  ActionButton,
   ConfirmModal,
   NoticeBox,
   StatusBadge,
@@ -57,12 +65,22 @@ export function BrainDetailView({
   const renameBrain = useRpc(brains.rename);
   const removeBrain = useRpc(brains.remove);
   const setPolicy = useRpc(brains.setPolicy);
+  const setRelay = useRpc(brains.setRelay);
   const revokeProject = useRpc(brains.revokeProject);
 
   const nameInputRef = useRef<SettingsInputHandle>(null);
+  const lastSyncedNameRef = useRef(brain.name);
   const [nameDraft, setNameDraft] = useState(brain.name);
+  const [nameDirty, setNameDirty] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
   const [savingName, setSavingName] = useState(false);
+
+  const relayInputRef = useRef<SettingsInputHandle>(null);
+  const lastSyncedRelayRef = useRef(brain.relay);
+  const [relayDraft, setRelayDraft] = useState(brain.relay);
+  const [relayDirty, setRelayDirty] = useState(false);
+  const [relayError, setRelayError] = useState<string | null>(null);
+  const [savingRelay, setSavingRelay] = useState(false);
 
   const [savingPolicy, setSavingPolicy] = useState(false);
   const [confirmFullPolicy, setConfirmFullPolicy] = useState(false);
@@ -73,12 +91,23 @@ export function BrainDetailView({
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
 
-  // 服务端推送名称变化时同步输入框内容。
+  // 仅当服务端名称实际变化且用户未在编辑时同步，避免实时推送打断输入。
   useEffect(() => {
+    if (nameDirty || lastSyncedNameRef.current === brain.name) return;
+    lastSyncedNameRef.current = brain.name;
     setNameDraft(brain.name);
     nameInputRef.current?.replaceText(brain.name);
     setNameError(null);
-  }, [brain.brainId, brain.name]);
+  }, [brain.name, nameDirty]);
+
+  // 仅当服务端 relay 实际变化且用户未在编辑时同步，避免实时状态推送打断输入。
+  useEffect(() => {
+    if (relayDirty || lastSyncedRelayRef.current === brain.relay) return;
+    lastSyncedRelayRef.current = brain.relay;
+    setRelayDraft(brain.relay);
+    relayInputRef.current?.replaceText(brain.relay);
+    setRelayError(null);
+  }, [brain.relay, relayDirty]);
 
   const policyOptions = useMemo(
     () =>
@@ -100,6 +129,10 @@ export function BrainDetailView({
     setSavingName(true);
     try {
       await renameBrain({ brainId: brain.brainId, name: trimmed });
+      lastSyncedNameRef.current = trimmed;
+      setNameDraft(trimmed);
+      nameInputRef.current?.replaceText(trimmed);
+      setNameDirty(false);
       toast.show(t("remoteMachines.renameSuccess"), { variant: "success" });
     } catch (err) {
       const msg = errorMessage(err);
@@ -109,6 +142,38 @@ export function BrainDetailView({
       setSavingName(false);
     }
   }, [brain.brainId, brain.name, nameDraft, renameBrain, t, toast]);
+
+  const handleUpdateRelay = useCallback(async () => {
+    const parsed = RelayAddressSchema.safeParse(relayDraft);
+    if (!parsed.success) {
+      setRelayError(t("remoteMachines.updateRelayInvalid"));
+      return;
+    }
+    if (parsed.data === brain.relay) return;
+    setRelayError(null);
+    setSavingRelay(true);
+    try {
+      await setRelay({ brainId: brain.brainId, relay: parsed.data });
+      lastSyncedRelayRef.current = parsed.data;
+      setRelayDraft(parsed.data);
+      relayInputRef.current?.replaceText(parsed.data);
+      setRelayDirty(false);
+      toast.show(t("remoteMachines.updateRelaySuccess"), { variant: "success" });
+    } catch (err) {
+      const msg = errorMessage(err);
+      setRelayError(msg);
+      toast.error(msg);
+    } finally {
+      setSavingRelay(false);
+    }
+  }, [brain.brainId, brain.relay, relayDraft, setRelay, t, toast]);
+
+  const handleResetOfficialRelay = useCallback(() => {
+    setRelayDraft(DEFAULT_RELAY);
+    relayInputRef.current?.replaceText(DEFAULT_RELAY);
+    setRelayDirty(DEFAULT_RELAY !== brain.relay);
+    setRelayError(null);
+  }, [brain.relay]);
 
   const applyPolicy = useCallback(
     async (nextPolicy: BrainPolicy) => {
@@ -165,8 +230,13 @@ export function BrainDetailView({
     setRemoveError(null);
     setRemoving(true);
     try {
-      await removeBrain({ brainId: brain.brainId });
-      toast.show(t("remoteMachines.removeSuccess"), { variant: "success" });
+      const result = await removeBrain({ brainId: brain.brainId });
+      toast.show(
+        result.remoteRevoked
+          ? t("remoteMachines.removeSuccess")
+          : t("remoteMachines.removeSuccessLocalOnly"),
+        { variant: result.remoteRevoked ? "success" : "warning" },
+      );
       setConfirmRemove(false);
       onBack();
     } catch (err) {
@@ -182,6 +252,9 @@ export function BrainDetailView({
       : brain.transport === "relay"
         ? t("transport.relay")
         : "—";
+
+  const showRelayHint = Boolean(brain.lastError) || brain.status === "disconnected";
+  const relayHasChanges = relayDraft.trim() !== brain.relay;
 
   const models = brain.models ?? [];
 
@@ -213,14 +286,29 @@ export function BrainDetailView({
         />
       </View>
 
-      {brain.lastError ? (
+      {showRelayHint ? (
         <NoticeBox
-          tone="danger"
+          tone={brain.lastError ? "danger" : "warning"}
           icon="AlertTriangle"
-          title={t("remoteMachines.lastErrorLabel")}
-          items={[brain.lastError]}
+          title={brain.lastError ? t("remoteMachines.lastErrorLabel") : t(brainStatusKey(brain.status))}
+          items={
+            brain.lastError
+              ? [brain.lastError, t("remoteMachines.relayChangedHint")]
+              : [t("remoteMachines.relayChangedHint")]
+          }
           theme={theme}
-        />
+        >
+          <View style={styles.noticeActions}>
+            <ActionButton
+              label={t("remoteMachines.relayChangedFocusAction")}
+              icon="Link2"
+              theme={theme}
+              variant="outline"
+              compact
+              onPress={() => relayInputRef.current?.focus()}
+            />
+          </View>
+        </NoticeBox>
       ) : null}
 
       <SettingsSection title={t("remoteMachines.overviewSection")}>
@@ -242,10 +330,45 @@ export function BrainDetailView({
               {transportText}
             </Text>
           </SettingsRow>
-          <SettingsRow label={t("remoteMachines.relayLabel")}>
-            <Text selectable style={[styles.valueText, { color: theme.colors.foreground }]}>
-              {brain.relay}
-            </Text>
+          <SettingsInput
+            ref={relayInputRef}
+            label={t("remoteMachines.updateRelayLabel")}
+            hint={t("remoteMachines.updateRelayHint")}
+            initialValue={brain.relay}
+            placeholder={t("remoteMachines.updateRelayPlaceholder")}
+            error={relayError}
+            disabled={savingRelay}
+            onChangeText={(value) => {
+              setRelayDraft(value);
+              setRelayDirty(true);
+              if (relayError) setRelayError(null);
+            }}
+          />
+          <SettingsRow label={t("remoteMachines.updateRelayAction")}>
+            <View style={styles.inlineActions}>
+              {relayDraft.trim() !== DEFAULT_RELAY ? (
+                <ActionButton
+                  label={t("remoteMachines.useOfficialRelay")}
+                  theme={theme}
+                  variant="outline"
+                  compact
+                  disabled={savingRelay}
+                  onPress={handleResetOfficialRelay}
+                />
+              ) : null}
+              <ActionButton
+                label={
+                  savingRelay
+                    ? t("remoteMachines.updateRelaySaving")
+                    : t("remoteMachines.updateRelayAction")
+                }
+                theme={theme}
+                variant="primary"
+                compact
+                disabled={savingRelay || !relayHasChanges}
+                onPress={() => void handleUpdateRelay()}
+              />
+            </View>
           </SettingsRow>
         </SettingsCard>
       </SettingsSection>
@@ -261,6 +384,7 @@ export function BrainDetailView({
             disabled={savingName}
             onChangeText={(value) => {
               setNameDraft(value);
+              setNameDirty(true);
               if (nameError) setNameError(null);
             }}
           />
@@ -414,5 +538,16 @@ const styles = StyleSheet.create({
   },
   valueText: {
     fontSize: 14,
+  },
+  noticeActions: {
+    flexDirection: "row",
+    justifyContent: "flex-start",
+    marginTop: 2,
+  },
+  inlineActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
   },
 });
