@@ -10,7 +10,7 @@ type Transport = Parameters<typeof openDaemonSecureChannel>[0];
 type EndpointStatus = "connecting" | "connected" | "disconnected";
 
 const CONTROL_STALE_MS = 30_000;
-const MAX_WIRE_BYTES = 2 * MAX_FRAME_BYTES;
+export const MAX_WIRE_BYTES = 2 * MAX_FRAME_BYTES;
 const controlSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("sync"), connectionIds: z.array(z.string().min(1)) }),
   z.object({ type: z.literal("connected"), connectionId: z.string().min(1) }),
@@ -32,11 +32,11 @@ function relaySocket(target: Target, role: "server" | "client", connectionId?: s
     autoSelectFamilyAttemptTimeout: 5_000,
   };
   const socket = new WebSocket(url, options);
-  socket.binaryType = "arraybuffer";
   return socket;
 }
 
-function protectedPeer(socket: WebSocket, key: { daemonKeyPair: DaemonKey } | { daemonPublicKeyB64: string }): Peer {
+export function protectedPeer(socket: WebSocket, key: { daemonKeyPair: DaemonKey } | { daemonPublicKeyB64: string }): Peer {
+  socket.binaryType = "arraybuffer";
   let channel: SecureChannel | undefined;
   const early: string[] = [];
   const transport: Transport = {
@@ -83,7 +83,7 @@ function protectedPeer(socket: WebSocket, key: { daemonKeyPair: DaemonKey } | { 
       else if (early.length < 4) early.push(data);
       else peer.close(new ProtocolError("invalid"));
     },
-    onerror() { peer.close(new ProtocolError("identity", "Protected relay handshake or record verification failed.")); },
+    onerror() { peer.close(new ProtocolError("identity", "Protected transport handshake or record verification failed.")); },
   };
   const activate = (secure: SecureChannel) => {
     if (peer.failure) return;
@@ -92,7 +92,7 @@ function protectedPeer(socket: WebSocket, key: { daemonKeyPair: DaemonKey } | { 
     for (const text of early) peer.receive(text);
     early.length = 0;
   };
-  const rejectHandshake = () => peer.close(new ProtocolError("identity", "Could not verify the protected relay endpoint."));
+  const rejectHandshake = () => peer.close(new ProtocolError("identity", "Could not verify the protected endpoint."));
   if ("daemonKeyPair" in key) {
     // relay 会在数据 socket 打开后立即转发缓存的 hello。先装接收器。
     void openDaemonSecureChannel(transport, { ...key, minimumMode: "protected", events })

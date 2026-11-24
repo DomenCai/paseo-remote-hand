@@ -19,7 +19,7 @@ async function challenge(peer: Peer): Promise<string> {
   return validate(challengeSchema, await peer.request("auth.challenge")).challenge;
 }
 
-async function resume(peer: Peer, brain: StoredBrain): Promise<void> {
+export async function resume(peer: Peer, brain: Pick<StoredBrain, "key" | "publicKeyB64">): Promise<void> {
   const proof = signDevice(brain.key, brainFingerprint(brain.publicKeyB64), await challenge(peer));
   validate(deviceIdSchema, await peer.request("auth.resume", proof));
 }

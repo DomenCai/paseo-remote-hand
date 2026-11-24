@@ -9,5 +9,9 @@
     "resolveJsonModule": true,
     "noEmit": true
   },
-  "files": ["index.server.ts", "server/identity.test.ts"]
+  "files": [
+    "index.server.ts",
+    "server/identity.test.ts",
+    "server/direct/direct.test.ts"
+  ]
 }

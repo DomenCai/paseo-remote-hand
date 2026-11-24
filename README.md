@@ -64,7 +64,7 @@ npm run typecheck
 npm test
 ```
 
-M1a 接入可参考[应用协议](docs/protocol.md)。
+M1a 接入可参考[应用协议](docs/protocol.md)。可选直连的底层测试与接入说明见 [EasyTier 直连](docs/direct.md)。
 
 ## 许可证
 
