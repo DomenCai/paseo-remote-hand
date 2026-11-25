@@ -3,7 +3,7 @@
   "name": "Remote hand",
   "description": "Connects Remote hand devices through a dedicated Paseo relay endpoint.",
   "requirements": {
-    "paseo": ">=0.16.1 <0.18.0"
+    "paseo": ">=0.16.1"
   },
   "build": [
     [

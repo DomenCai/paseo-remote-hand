@@ -6,7 +6,7 @@ Remote hand 是 Paseo 插件。**hand** 是保存项目的本机，**brain** 是
 
 ## 安装
 
-两端都安装 Paseo 0.16.1 或更新的 0.16、0.17 版本，并启用插件。brain 需要能在 Paseo 内运行所选 provider。插件会为自己的会话注入 MCP；无需开启 daemon 的 MCP 注入或 Claude 的 Paseo Tools。在两台机器上分别执行：
+两端都安装 Paseo 0.16.1 或更新版本，并启用插件。brain 需要能在 Paseo 内运行所选 provider。插件会为自己的会话注入 MCP；无需开启 daemon 的 MCP 注入或 Claude 的 Paseo Tools。在两台机器上分别执行：
 
 ```sh
 paseo plugin install git:DomenCai/paseo-remote-hand
@@ -95,7 +95,7 @@ node dev/rpc.mjs brains.set-policy '{"brainId":"<brainId>","policy":"full"}'
 
 ## Windows hand
 
-- 使用 Paseo 0.16.1 及以上的 0.16、0.17 版本和 Node 20.19+，让本机 daemon 和 `dev/*.mjs` 读取同一个 `PASEO_HOME`。默认是当前账户的 `%USERPROFILE%\.paseo`；自定义时优先使用绝对路径。Paseo 支持 `~/` 展开，`~\` 不展开。开发脚本从该目录读取 `paseo.pid`、`server-id` 和 `local-credential`，只连接本机命名管道或回环 TCP。配对可直接在 App 中操作。
+- 使用 Paseo 0.16.1 或更新版本和 Node 20.19+，让本机 daemon 和 `dev/*.mjs` 读取同一个 `PASEO_HOME`。默认是当前账户的 `%USERPROFILE%\.paseo`；自定义时优先使用绝对路径。Paseo 支持 `~/` 展开，`~\` 不展开。开发脚本从该目录读取 `paseo.pid`、`server-id` 和 `local-credential`，只连接本机命名管道或回环 TCP。配对可直接在 App 中操作。
 - 在私有 NTFS 用户目录下保存 Paseo home。`state.json` 和写入时的暂存文件含设备私钥，Windows 的 `0600` / `0700` 不会限制其他账户读取；插件依赖目录与文件继承的 ACL，不会配置 Windows ACL。自定义目录应先限制其他账户的访问；可用 `icacls (Join-Path $env:PASEO_HOME 'plugin-data\remote-hand')` 检查插件状态目录的权限（先把 `$env:PASEO_HOME` 设为 daemon 实际使用的目录）。不要放到共享目录、网络盘或无法提供账户 ACL 的卷上。
 - 项目使用带盘符的绝对路径（如 `C:\Work Space\repo`）或普通 UNC 路径。受限档按真实目录授权；不接受盘符相对路径、设备路径、NTFS 数据流及命名管道。新建文件需要文件系统支持硬链接；覆盖会用暂存文件替换，Windows 上不会复制目标文件单独设置的 ACL，在验证前请勿用工具覆盖这类文件。网络共享、长路径和文件被其他进程占用时的行为取决于文件系统及 Windows 设置。
 - 完全档的 `hand_bash` 优先使用 PATH 中的 PowerShell 7 (`pwsh.exe`)，再用系统 Windows PowerShell；启动时跳过 profile。取消走 `taskkill /T /F`，已脱离进程树、或父进程先退出的子进程可能无法回收。插件界面当前没有 Git Bash 选项。
