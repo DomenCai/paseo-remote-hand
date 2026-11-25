@@ -1,16 +1,20 @@
 import assert from "node:assert/strict";
 import { createSocket, type Socket as UdpSocket } from "node:dgram";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
 import { createServer, connect, type AddressInfo, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { generateKeyPair, exportPublicKey, importPublicKey, importSecretKey } from "@getpaseo/relay/e2ee";
+import type { EasyTierStatus } from "../../shared/settings.ts";
 import { BrainService } from "../brain.ts";
 import { digest, newDeviceKey } from "../identity.ts";
 import { StateStore } from "../state.ts";
-import { ensureEasyTier } from "./easytier-binary.ts";
+import { easyTierSnapshots, ensureEasyTier, importEasyTier } from "./easytier-binary.ts";
+import { EASYTIER_VERSION, easyTierArtifacts } from "./easytier-release.ts";
 import { easyTierConfig, localTcpPort, newDirectNetwork, runEasyTier, startEasyTier } from "./easytier.ts";
 import { connectDirect, listenDirect } from "./transport.ts";
 
@@ -119,6 +123,54 @@ test("EasyTier rejects an altered archive and stays disabled with no peers", asy
   const signal = new AbortController().signal;
   assert.equal(await startEasyTier({ role: "hand", network: newDirectNetwork(), brainPort: 1, stateDir: directory, signal }), undefined);
   await assert.rejects(ensureEasyTier(directory, { signal, archivePath: invalid }), /archive SHA-256 verification failed/);
+  await assert.rejects(importEasyTier(directory, invalid), /archive SHA-256 verification failed/);
+});
+
+function easyTierStatus(stateDir: string) {
+  let latest: EasyTierStatus | undefined;
+  const watching = new AbortController();
+  type Context = Parameters<ReturnType<typeof easyTierSnapshots>["watch"]>[0];
+  easyTierSnapshots(stateDir).watch({ signal: watching.signal, push: async (value: EasyTierStatus) => { latest = value; } } as Context);
+  watching.abort();
+  return latest!;
+}
+
+test("EasyTier download falls back across sources and manual import replaces a pending download", { timeout: 60_000 }, async (t) => {
+  const directory = await fixture(t);
+  const file = easyTierArtifacts[`${process.platform}-${process.arch}` as keyof typeof easyTierArtifacts].file;
+  const server = createHttpServer((request, response) => {
+    const [, kind, version, name] = request.url!.split("/");
+    assert.equal(`${version}/${name}`, `v${EASYTIER_VERSION}/${file}`);
+    if (kind === "stall") { response.writeHead(200, { "content-length": "1000" }); response.write("x"); return; }
+    if (kind === "bad") { response.end("not the release"); return; }
+    if (kind === "redirect") { response.writeHead(302, { location: `/good/${version}/${name}` }).end(); return; }
+    if (kind === "good" && archivePath) { createReadStream(archivePath).pipe(response); return; }
+    response.writeHead(500).end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, localhost, resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = `http://${localhost}:${(server.address() as AddressInfo).port}`;
+  const signal = AbortSignal.timeout(50_000);
+
+  const failed = path.join(directory, "failed");
+  await assert.rejects(ensureEasyTier(failed, { signal, stallMs: 300, sources: [`${base}/stall`, `${base}/bad`, `${base}/error`] }),
+    /^Error: EasyTier download failed: 127\.0\.0\.1:\d+ stalled; 127\.0\.0\.1:\d+ archive SHA-256 verification failed; 127\.0\.0\.1:\d+ HTTP 500\.$/);
+  assert.equal(easyTierStatus(failed).state, "failed");
+  t.diagnostic("三个源依次因停滞、摘要不符、HTTP 500 失败，错误列出每个源的原因。");
+  if (!archivePath) return t.diagnostic("未设置 EASYTIER_TEST_ZIP，跳过成功回落与手动导入。");
+
+  const fallback = path.join(directory, "fallback");
+  assert.ok(await stat(await ensureEasyTier(fallback, { signal, sources: [`${base}/error`, `${base}/redirect`] })));
+  assert.equal(easyTierStatus(fallback).state, "ready");
+  t.diagnostic("第一个源 HTTP 500 后回落到第二个源（经 302 跳转），安装成功。");
+
+  const imported = path.join(directory, "imported");
+  const waiting = ensureEasyTier(imported, { signal, stallMs: 30_000, sources: [`${base}/stall`] });
+  await eventually(async () => easyTierStatus(imported).state === "downloading", "download started");
+  await importEasyTier(imported, archivePath);
+  assert.ok(await stat(await waiting));
+  assert.equal(easyTierStatus(imported).state, "ready");
+  t.diagnostic("下载停滞时手动导入正确 ZIP，取代下载，原等待者拿到导入结果。");
 });
 
 test("EasyTier loopback: Noise NK, M0 device auth, bidirectional ACL block and cleanup", { timeout: 150_000 }, async (t) => {

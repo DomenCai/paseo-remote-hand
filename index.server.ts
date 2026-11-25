@@ -1,8 +1,9 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { access, brains, devices, direct, endpoint } from "./shared/settings.ts";
+import { access, brains, devices, direct, easyTier, endpoint } from "./shared/settings.ts";
 import { BrainService } from "./server/brain.ts";
 import { createBrainAgentService } from "./server/brain/index.ts";
 import { resolvePaseoHome } from "./server/daemon-location.mjs";
+import { easyTierSnapshots, importEasyTier } from "./server/direct/easytier-binary.ts";
 import { HandService } from "./server/hand.ts";
 import { createLocalDaemon } from "./server/local-daemon.ts";
 import { createHandProvider } from "./server/provider/index.ts";
@@ -58,6 +59,9 @@ export default function contribute(server: PluginServerContext) {
     directSnapshots.changed();
     return null;
   });
+
+  server.handle(easyTier.watch, (_, context) => easyTierSnapshots(state.dir).watch(context));
+  server.handle(easyTier.import, async ({ path }) => { await importEasyTier(state.dir, path); return null; });
 
   server.handle(endpoint.get, () => brain.endpoint());
   server.handle(endpoint.watch, (_, context) => brain.endpointSnapshots.watch(context));
