@@ -2,9 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { PaseoApi, PaseoAgentHandle } from "@getpaseo/client";
-import { defineAgentTool, type PluginHookPayload, type PluginServerContext, type PluginSessionOpenRequest } from "@getpaseo/plugin/server";
+import type { PluginHookPayload, PluginServerContext, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { z } from "zod";
-import { handTools } from "../../shared/hand-tools.ts";
+import { handTools, type HandToolResult } from "../../shared/hand-tools.ts";
 import {
   remoteAgentRequests, remoteAgentStreams, remoteToolEvents,
   type RemoteAgentJson, type RemoteAgentPlatform, type RemoteAgentPort,
@@ -12,6 +12,7 @@ import {
 } from "../../shared/remote-agent.ts";
 import { absolutePath } from "../hand-tools/paths.ts";
 import { errorMessage, toRemoteJson } from "../remote-agent-stream.ts";
+import { createHandMcp, handMcpName } from "./hand-mcp.ts";
 import { agentEvents, fetchPage } from "./timeline.ts";
 
 export interface BrainAccess { providers: readonly string[] }
@@ -37,7 +38,6 @@ function systemPrompt(handCwd: string, platform: RemoteAgentPlatform) {
   return [
     `The project is on the user's hand computer (${platform}). The absolute project path is ${JSON.stringify(handCwd)}.`,
     "Your current working directory on the brain is an empty placeholder. It does not contain the project.",
-    "Use only hand_read, hand_write, hand_edit, hand_glob, hand_grep and hand_bash for project file and command operations. Use the hand computer's absolute paths and shell syntax. If the hand disconnects or a tool result is unknown, do not retry a write, edit or command automatically.",
   ].join("\n");
 }
 
@@ -93,47 +93,52 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
   const activeTools = new Map<string, Set<AbortController>>();
   const stopping = new Set<string>();
 
+  const mcp = createHandMcp(async ({ agentId, deviceId }, name, input, signal): Promise<HandToolResult> => {
+    const link = links.get(deviceId);
+    if (!link || link.signal.aborted) return { text: "The hand is disconnected. Wait for it to reconnect.", isError: true };
+    const cancelled = { text: "Tool execution cancelled.", isError: true };
+    if (signal.aborted || stopping.has(agentId)) return cancelled;
+    const stop = new AbortController();
+    const calls = activeTools.get(agentId) ?? new Set<AbortController>();
+    calls.add(stop);
+    activeTools.set(agentId, calls);
+    const callSignal = AbortSignal.any([signal, link.signal, stop.signal]);
+    try {
+      for await (const message of link.port.open(
+        "tool.call", toRemoteJson({ agentId, name, input }), callSignal,
+      )) {
+        callSignal.throwIfAborted();
+        const event = remoteToolEvents.parse(message);
+        // 继续逐帧消费 hand 的输出；Claude 的工具结果保留完整的有界正文。
+        if (event.type === "result") return { text: event.text, isError: event.isError };
+      }
+      throw new Error("The hand ended the tool stream without returning a result.");
+    } catch (error) {
+      return signal.aborted || stop.signal.aborted ? cancelled : {
+        text: `Tool result is unknown; do not automatically retry a write, edit or command. ${errorMessage(error)}`,
+        isError: true,
+      };
+    } finally {
+      calls.delete(stop);
+      if (!calls.size) activeTools.delete(agentId);
+    }
+  });
+
   async function openHook({ request }: PluginHookPayload<"agent.open.before">): Promise<PluginSessionOpenRequest | undefined> {
     const owner = ownerSchema.safeParse(request.metadata[ownerKey]);
     if (!owner.success || request.purpose !== "interactive" || request.provider === "remote-hand") return;
     if (await realpath(placement(paseoHome, owner.data).cwd) !== await realpath(request.cwd)) return;
-    const tools = Object.values(handTools).map((definition) => defineAgentTool<z.ZodType>({
-      ...definition,
-      async execute(input, { signal }) {
-        const link = links.get(owner.data.deviceId);
-        if (!link || link.signal.aborted) return { text: "The hand is disconnected. Wait for it to reconnect.", isError: true };
-        const agentId = request.agentId;
-        if (stopping.has(agentId)) return { text: "Tool execution cancelled.", isError: true };
-        const stop = new AbortController();
-        const calls = activeTools.get(agentId) ?? new Set<AbortController>();
-        calls.add(stop);
-        activeTools.set(agentId, calls);
-        const callSignal = AbortSignal.any([signal, link.signal, stop.signal]);
-        try {
-          for await (const message of link.port.open(
-            "tool.call", toRemoteJson({ agentId: request.agentId, name: definition.name, input }), callSignal,
-          )) {
-            callSignal.throwIfAborted();
-            const event = remoteToolEvents.parse(message);
-            if (event.type === "result") {
-              // Claude 可能只读取结构化回包；读取正文等内容在 text 中。
-              return { text: event.text, isError: event.isError };
-            }
-          }
-          throw new Error("The hand ended the tool stream without returning a result.");
-        } catch (error) {
-          return {
-            text: signal.aborted || stop.signal.aborted ? "Tool execution cancelled." :
-              `Tool result is unknown; do not automatically retry a write, edit or command. ${errorMessage(error)}`,
-            isError: true,
-          };
-        } finally {
-          calls.delete(stop);
-          if (!calls.size) activeTools.delete(agentId);
-        }
-      },
-    }));
-    return { ...request, tools: [...request.tools, ...tools] };
+    const lease = await mcp.issue(request.agentId, owner.data.deviceId);
+    const names = Object.keys(handTools).map((name) => `mcp__${handMcpName}__${name}`).join(", ");
+    return {
+      ...request,
+      env: { ...request.env, ...lease.env },
+      mcpServers: { ...request.mcpServers, [handMcpName]: lease.server },
+      appendSystemPrompt: [
+        ...(request.appendSystemPrompt ?? []),
+        `Use only these tools for project file and command operations: ${names}. Use the hand computer's absolute paths and shell syntax. If the hand disconnects or a tool result is unknown, do not retry a write, edit or command automatically.`,
+      ],
+    };
   }
 
   function attach({ deviceId, paseo, access, port }: {
@@ -242,6 +247,11 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
 
   return {
     attach,
-    registerHook: (server: Pick<PluginServerContext, "addHook">) => server.addHook("agent.open.before", openHook),
+    close: mcp.close,
+    registerHook(server: Pick<PluginServerContext, "addHook">) {
+      const removeOpen = server.addHook("agent.open.before", openHook);
+      const removeClose = server.addHook("agent.close.after", async ({ agent }) => { mcp.revoke(agent.id); });
+      return () => { removeOpen(); removeClose(); };
+    },
   };
 }

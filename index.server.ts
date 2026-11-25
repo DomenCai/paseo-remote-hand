@@ -72,6 +72,7 @@ export default function contribute(server: PluginServerContext) {
     stopping = true;
     unsubscribeModels();
     unregisterHook();
+    await agents.close();
     await provider.dispose();
     hand.stop();
     brain.stop();

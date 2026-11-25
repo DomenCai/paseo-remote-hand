@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import type { PaseoAgentHandle, PaseoAgentTimelineEvent, PaseoApi, PaseoWorkspaceAgentCreateOptions } from "@getpaseo/client";
-import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { PluginHookPayload, PluginServerContext, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { ProviderEventSchema, type ProviderEvent, type ProviderSessionConfig } from "@getpaseo/plugin/server/provider";
 import type { RemoteAgentPort, RemoteAgentStream } from "../../shared/remote-agent.ts";
 import { createBrainAgentService } from "../brain/index.ts";
@@ -56,24 +58,17 @@ function loopback() {
 
 type State = NonNullable<Awaited<ReturnType<PaseoAgentHandle["refresh"]>>>["agent"];
 type Item = Awaited<ReturnType<PaseoAgentHandle["timeline"]["refetch"]>>["entries"][number]["item"];
-type OpenRequest = { request: {
-  agentId: string; workspaceId: string; cwd: string; provider: string; reason: "create"; purpose: "interactive";
-  tools: unknown[];
-  labels: Record<string, string>; metadata: NonNullable<State["metadata"]>; env: Record<string, string>; mcpServers: {};
-  title: string | null; background: boolean;
-} };
-type AttachedTool = {
-  name: string;
-  execute(input: unknown, ctx: { signal: AbortSignal }): Promise<{ text?: string; isError?: boolean; structuredContent?: unknown }>;
-};
+type OpenHook = (payload: PluginHookPayload<"agent.open.before">) => Promise<PluginSessionOpenRequest | undefined>;
+type CloseHook = (payload: PluginHookPayload<"agent.close.after">) => Promise<void>;
 
 function fakePaseo() {
-  let openHook: ((payload: OpenRequest) => Promise<{ tools: AttachedTool[] } | undefined>) | undefined;
+  let openHook: OpenHook | undefined;
+  let closeHook: CloseHook | undefined;
   const records = new Map<string, ReturnType<typeof record>>();
   const titles = new Map<string, string>();
   const responses: unknown[] = [];
 
-  function record(cwd: string, opts: PaseoWorkspaceAgentCreateOptions, tools: AttachedTool[]) {
+  function record(cwd: string, opts: PaseoWorkspaceAgentCreateOptions, launch?: PluginSessionOpenRequest) {
     const id = opts.agentId!;
     const provider = opts.config.provider.split("/")[0];
     const listeners = new Set<(event: PaseoAgentTimelineEvent) => void>();
@@ -145,7 +140,7 @@ function fakePaseo() {
     } as unknown as PaseoAgentHandle;
 
     return {
-      opts, handle, tools, row, finish, pendingTool, listeners,
+      opts, handle, launch, row, finish, pendingTool, listeners,
       requestPermission() {
         const request = {
           id: "permission-1", provider, name: "AskUserQuestion", kind: "question" as const,
@@ -186,7 +181,7 @@ function fakePaseo() {
               reason: "create", purpose: "interactive", tools: [], labels: {}, metadata: opts.metadata ?? {},
               env: {}, mcpServers: {}, title: opts.title ?? null, background: false,
             } });
-            const agent = record(cwd, opts, result?.tools ?? []);
+            const agent = record(cwd, opts, result);
             records.set(agent.handle.id, agent);
             return agent.handle;
           } },
@@ -198,9 +193,14 @@ function fakePaseo() {
 
   return {
     api, records, titles, responses,
-    hook: { addHook(name: string, hook: typeof openHook) {
+    closeAgent: (agent: PluginHookPayload<"agent.close.after">["agent"]) => closeHook?.({ agent }),
+    hook: { addHook(name: string, hook: OpenHook | CloseHook) {
+      if (name === "agent.close.after") {
+        closeHook = hook as CloseHook;
+        return () => { closeHook = undefined; };
+      }
       assert.equal(name, "agent.open.before");
-      openHook = hook;
+      openHook = hook as OpenHook;
       return () => { openHook = undefined; };
     } } as unknown as Pick<PluginServerContext, "addHook">,
   };
@@ -247,6 +247,7 @@ test("brain ↔ hand loopback: prompts, hand tools, permissions, stop, reconnect
     agent.finish("canceled");
   } });
   t.after(service.registerHook(fake.hook));
+  t.after(service.close);
 
   const access = { providers: ["claude-sub", "remote-hand"] };
   let pair = loopback();
@@ -305,8 +306,26 @@ test("brain ↔ hand loopback: prompts, hand tools, permissions, stop, reconnect
   const before = await eventually(() => get("timeline.item", ({ item }) => item.type === "assistant_message" && item.text === "before"), "first assistant timeline item");
   await eventually(() => get("session.turn", ({ state }) => state === "started"), "turn started");
 
-  function tool(name: string, input: object, signal = new AbortController().signal) {
-    return agent.tools.find((tool) => tool.name === name)!.execute(input, { signal });
+  function mcpConfig(launch: PluginSessionOpenRequest) {
+    assert.deepEqual(launch.tools, []);
+    const config = launch.mcpServers["remote-hand"];
+    assert.ok(config.type === "http");
+    const authorization = config.headers?.Authorization?.replace(/\$\{([^}]+)\}/g, (_, key: string) => launch.env[key]);
+    assert.ok(authorization?.startsWith("Bearer "));
+    return { url: new URL(config.url), headers: { Authorization: authorization } };
+  }
+  const mcp = mcpConfig(agent.launch!);
+  const client = new Client({ name: "test", version: "0.0.0" });
+  await client.connect(new StreamableHTTPClientTransport(mcp.url, { requestInit: { headers: mcp.headers } }));
+  t.after(() => client.close());
+  const { tools } = await client.listTools();
+  assert.deepEqual(tools.map(({ name }) => name).sort(), ["hand_bash", "hand_edit", "hand_glob", "hand_grep", "hand_read", "hand_write"]);
+  assert.ok(agent.launch?.appendSystemPrompt?.join(" ").includes("mcp__remote-hand__hand_read"));
+  async function tool(name: string, input: object, signal?: AbortSignal) {
+    const result = await client.callTool({ name, arguments: input }, undefined, { signal });
+    const [content] = result.content as { type: string; text: string }[];
+    assert.equal(content.type, "text");
+    return { text: content.text, isError: result.isError };
   }
   assert.match((await tool("hand_read", { path: file })).text!, /hand only/);
   const command = process.platform === "win32" ? "Write-Output 'full mode'" : "printf 'full mode'";
@@ -318,10 +337,10 @@ test("brain ↔ hand loopback: prompts, hand tools, permissions, stop, reconnect
   const cancelCommand = process.platform === "win32"
     ? "Add-Content -LiteralPath cancel.txt -Value run; Start-Sleep -Seconds 30"
     : "printf 'run\n' > cancel.txt; /bin/sleep 30";
-  const cancelledTool = tool("hand_bash", { command: cancelCommand, timeout_ms: 5_000 }, toolCancel.signal);
+  const cancelledTool = assert.rejects(tool("hand_bash", { command: cancelCommand, timeout_ms: 5_000 }, toolCancel.signal));
   await awaitFile(path.join(cwd, "cancel.txt"));
   toolCancel.abort();
-  assert.match((await cancelledTool).text!, /Tool execution cancelled/);
+  await cancelledTool;
 
   agent.requestPermission();
   await eventually(() => get("session.permission", ({ request }) => request.id === "permission-1"), "permission appears on hand");
@@ -338,6 +357,24 @@ test("brain ↔ hand loopback: prompts, hand tools, permissions, stop, reconnect
   await assert.rejects(foreign.hand.request("agent.cancel", { agentId }), /not owned/);
   await assert.rejects(foreign.hand.request("agent.permission", { agentId, permissionId: "permission-1", response: { behavior: "deny" } }), /not owned/);
   await assert.rejects(foreign.hand.open("agent.events", { agentId, history: "replay" })[Symbol.asyncIterator]().next(), /not owned/);
+  const other = await foreign.hand.request("agent.create", {
+    handCwd: cwd, handPlatform: process.platform, provider: "claude-sub", model: "claude/sonnet",
+  }) as { agentId: string };
+  const otherMcp = mcpConfig(fake.records.get(other.agentId)!.launch!);
+  async function post(url: URL, headers?: Record<string, string>) {
+    const response = await fetch(url, {
+      method: "POST", headers: { ...headers, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    await response.body?.cancel();
+    return response.status;
+  }
+  assert.equal(await post(mcp.url), 401);
+  assert.equal(await post(otherMcp.url, mcp.headers), 401);
+  assert.equal(await post(otherMcp.url, otherMcp.headers), 200);
+  await fake.closeAgent({ id: other.agentId } as PluginHookPayload<"agent.close.after">["agent"]);
+  assert.equal(await post(otherMcp.url, otherMcp.headers), 401);
+
 
   const started = path.join(cwd, "started.txt");
   const writeAndWait = process.platform === "win32"

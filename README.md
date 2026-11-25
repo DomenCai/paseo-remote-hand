@@ -6,7 +6,7 @@ Remote hand 是 Paseo 插件。**hand** 是保存项目的本机，**brain** 是
 
 ## 安装
 
-两端都安装 Paseo 0.17.3 并启用插件。brain 需要能在 Paseo 内运行已登录的 Claude，并启用 daemon 的 MCP、向 agent 注入 MCP，以及 Claude 的 Paseo Tools（`config.json` 中的 `agents.providers.claude.paseoTools.enabled` 不能为 `false`，也不能在 `disabledTools` 中禁用 `hand_*`）。在插件目录执行：
+两端都安装 Paseo 0.17.3 并启用插件。brain 需要能在 Paseo 内运行已登录的 Claude。插件会为自己的会话注入 MCP；无需开启 daemon 的 MCP 注入或 Claude 的 Paseo Tools。在插件目录执行：
 
 ```sh
 npm ci --omit=dev --ignore-scripts
@@ -95,7 +95,7 @@ node dev/rpc.mjs brains.set-policy '{"brainId":"<brainId>","policy":"full"}'
 
 ## 已知问题
 
-- M1a 只暴露 Claude。Brain 的原生工具仍可用；系统提示要求用 `hand_*` 操作项目，但模型可能仍调用 brain 原生工具。受限档约束的是 hand 的工具。
+- M1a 只暴露 Claude。Brain 的原生工具仍可用；时间线中的 hand 工具以 `mcp__remote-hand__hand_*` 显示，系统提示要求用这些工具操作项目，但模型可能仍调用 brain 原生工具。受限档约束的是 hand 的工具。
 - 目录和工具输出走 relay；普通请求和开流参数有 128 KiB 帧上限。断线时正在执行的写入或命令可能结果未知，先核对项目和时间线再重试。
 - 最大设备并发数目前可保存，在这一阶段尚不限制任务。其他 provider 尚未验收。
 
