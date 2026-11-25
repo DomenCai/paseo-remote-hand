@@ -1,10 +1,20 @@
 // GitHub v2.6.4 发布附件。本地逐一下载并计算 ZIP 和所需成员的 SHA-256。
-const release = "https://github.com/EasyTier/EasyTier/releases/download/v2.6.4";
 export const EASYTIER_VERSION = "2.6.4";
+const github = "https://github.com/EasyTier/EasyTier/releases/download";
+
+/**
+ * 按顺序尝试的下载源；每个源提供 `<base>/v2.6.4/<官方 ZIP 文件名>`。
+ * ZIP 和成员的摘要固定在下方，来源只影响速度，不影响信任。镜像追加在 GitHub 之后。
+ */
+export const easyTierSources: readonly string[] = [
+  github,
+  "https://dl.fullai.top/easytier",
+];
 
 function artifact(target: string, sha256: string, members: Record<string, string>) {
   const directory = `easytier-${target}`;
-  return { url: `${release}/${directory}-v${EASYTIER_VERSION}.zip`, directory, sha256, members };
+  const file = `${directory}-v${EASYTIER_VERSION}.zip`;
+  return { file, officialUrl: `${github}/v${EASYTIER_VERSION}/${file}`, directory, sha256, members };
 }
 
 export const easyTierArtifacts = {

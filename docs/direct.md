@@ -17,7 +17,23 @@ node dev/watch.mjs brains.watch
 node dev/rpc.mjs brains.retry-direct '{"brainId":"<brainId>"}'
 ```
 
-`server/direct/easytier-release.ts` 记录 [EasyTier v2.6.4 官方附件](https://github.com/EasyTier/EasyTier/releases/tag/v2.6.4)的完整 URL、ZIP 和所需成员的 SHA-256。安装缓存位于插件状态目录的 `easytier/v2.6.4/<平台>-<架构>`，支持 macOS arm64/x64、Linux x64/arm64 和 Windows x64。只解压固定成员，每次启动前复核缓存。EasyTier 按 LGPL v3 作为独立子进程运行，插件不打包它的二进制。上游[源码](https://github.com/EasyTier/EasyTier/tree/v2.6.4)和[许可证](https://github.com/EasyTier/EasyTier/blob/v2.6.4/LICENSE)对应同一标签。
+## 安装 EasyTier
+
+`server/direct/easytier-release.ts` 记录 [EasyTier v2.6.4 官方附件](https://github.com/EasyTier/EasyTier/releases/tag/v2.6.4)的文件名、ZIP 和所需成员的 SHA-256。摘要固定，因此 ZIP 从哪里来都一样安全：摘要相符才安装，不符就拒绝。安装缓存位于插件状态目录的 `easytier/v2.6.4/<平台>-<架构>`，支持 macOS arm64/x64、Linux x64/arm64 和 Windows x64。只解压固定成员，每次启动前复核缓存。EasyTier 按 LGPL v3 作为独立子进程运行，插件不打包它的二进制。上游[源码](https://github.com/EasyTier/EasyTier/tree/v2.6.4)和[许可证](https://github.com/EasyTier/EasyTier/blob/v2.6.4/LICENSE)对应同一标签。
+
+缓存缺失时，协商直连会触发下载：
+
+- 下载源按 `easyTierSources` 的顺序尝试：先 GitHub 官方，再镜像 `https://dl.fullai.top/easytier`，新镜像追加在后面。每个源提供 `<base>/v2.6.4/<官方 ZIP 文件名>`，加一行 base 即可生效。连接失败、20 秒没有新数据、单源超过 10 分钟、HTTP 非 200、超过 40 MiB 或摘要不符，都换下一个源；全部失败时，错误按顺序列出每个源的主机和原因，例如 `EasyTier download failed: github.com stalled; mirror.example.com HTTP 404.`。
+- DNS 结果 IPv4 优先，IPv4 不通时仍可回到 IPv6。只影响这次下载，不改进程全局的 DNS 顺序。
+- 有 `HTTPS_PROXY`/`HTTP_PROXY`（或小写形式）时经 HTTP 代理下载：HTTPS 源用 `CONNECT` 隧道，明文源用绝对 URL 转发，支持 `user:pass@` 基本认证；`NO_PROXY` 按主机名后缀跳过代理。只支持 `http://` 代理，其他协议的代理会让该源失败并写明原因。变量取自 Paseo daemon 进程的环境。
+- 同一状态目录同时只有一个安装任务，多个连接共用它。任务不随某次协商取消，由上述停滞和单源时限收尾，因此协商放弃后下载仍会完成，下次协商直接使用缓存。协商侧的安装等待上限是 15 分钟，只防止协商永远挂起。
+
+设置页的直连区块订阅 `easytier.watch`，显示组件为未安装、下载中（含进度）、已就绪或失败（含原因）。失败或下载中时，区块给出官方 ZIP 链接和路径输入框，调用 `easytier.import` 手动导入。Paseo 插件客户端 SDK 0.17.3 没有文件选择器，所以粘贴本机绝对路径，可用 `~/` 开头。导入先完整校验摘要，不符时直接拒绝，进行中的下载不受影响；校验通过后取代进行中的下载并安装，原来等待下载的协商改用导入结果。缓存已就绪时导入直接成功，不读取文件。
+
+```sh
+node dev/watch.mjs easytier.watch
+node dev/rpc.mjs easytier.import '{"path":"~/Downloads/easytier-macos-aarch64-v2.6.4.zip"}'
+```
 
 ## 复跑
 
@@ -30,7 +46,7 @@ npm test
 npm run test:direct
 ```
 
-`npm run test:direct` 会获取本平台的官方 ZIP。已有 ZIP 时可用 `EASYTIER_TEST_ZIP=/absolute/path/to/release.zip npm run test:direct`，两种方式都校验摘要。测试不使用公网 peers 或 STUN。它启动本机双实例，先验证四个仿真服务在正对照中均能收到并回包，然后开启 ACL 验证两方向的 TCP、UDP 探针均到不了目标服务。同一测试覆盖路由探测应答后再连入口、允许入口的 M0 认证、96 KiB payload、错误密钥、未知和撤销设备、进程退出清理，另有虚拟网段避让的单元测试。另一项测试让两端 EasyTier 在回环上直接互连、缩短退避，覆盖掉线后自动恢复、频繁掉线用最长间隔、立即重试、对端关闭直连后不重试，以及撤销后清掉重试计时器。
+`npm run test:direct` 会获取本平台的官方 ZIP。已有 ZIP 时可用 `EASYTIER_TEST_ZIP=/absolute/path/to/release.zip npm run test:direct`，两种方式都校验摘要。下载测试用本机 HTTP 服务模拟停滞、摘要不符和 HTTP 500，确认依次换源且错误列出每个源的原因；提供 `EASYTIER_TEST_ZIP` 时还验证经 302 回落到可用源，以及停滞的下载被手动导入取代。测试不使用公网 peers 或 STUN。它启动本机双实例，先验证四个仿真服务在正对照中均能收到并回包，然后开启 ACL 验证两方向的 TCP、UDP 探针均到不了目标服务。同一测试覆盖路由探测应答后再连入口、允许入口的 M0 认证、96 KiB payload、错误密钥、未知和撤销设备、进程退出清理，另有虚拟网段避让的单元测试。另一项测试让两端 EasyTier 在回环上直接互连、缩短退避，覆盖掉线后自动恢复、频繁掉线用最长间隔、立即重试、对端关闭直连后不重试，以及撤销后清掉重试计时器。
 
 ## 生命周期
 

@@ -112,6 +112,25 @@ export const direct = {
   watch: defineSubscription({ name: "direct.watch", input: emptyInput, event: DirectSettingsSchema }),
 };
 
+// 本机 EasyTier 组件。ready 只表示缓存目录存在；每次启动前仍复核摘要。
+export const EasyTierStatusSchema = z.object({
+  state: z.enum(["missing", "downloading", "ready", "failed"]),
+  // 仅 downloading 时有值；total 在源未给出长度时为 null。
+  progress: z.object({ received: z.int().nonnegative(), total: z.int().positive().nullable() }).nullable(),
+  error: z.string().nullable(),
+  // 本平台的官方 ZIP，供手动下载；平台不受支持时为 null。
+  official: z.object({ file: nonEmptyString, url: z.url() }).nullable(),
+});
+export type EasyTierStatus = z.infer<typeof EasyTierStatusSchema>;
+
+export const easyTier = {
+  // 订阅开始时和每次变化时都发送完整状态；下载进度至多每 500 ms 一次。
+  watch: defineSubscription({ name: "easytier.watch", input: emptyInput, event: EasyTierStatusSchema }),
+  // path 为本机 ZIP 的绝对路径（可用 ~/ 开头）。先按固定摘要校验，通过后取代进行中的下载并安装；
+  // 缓存已就绪时不读取文件、直接成功。校验失败时进行中的下载不受影响。
+  import: defineRpc({ name: "easytier.import", input: z.object({ path: nameInput }), output: noOutput }),
+};
+
 export type BrainOs = z.infer<typeof BrainOsSchema>;
 export type BrainPolicy = z.infer<typeof BrainPolicySchema>;
 export type BrainStatus = z.infer<typeof BrainStatusSchema>;

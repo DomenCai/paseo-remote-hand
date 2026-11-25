@@ -27,7 +27,8 @@ const offerSchema = z.discriminatedUnion("kind", [
 const enabled = (config: DirectSettings) => config.enabled && config.peers.length > 0;
 const unavailable = "EasyTier direct connection could not be established.";
 const stopped = "EasyTier direct connection closed; using relay.";
-const installMs = 120_000;
+// 下载自身由停滞超时和单源上限收尾；这里只防协商永远挂起，不掐断仍在进行的慢速下载。
+const installMs = 15 * 60_000;
 const offerMs = installMs + 10_000;
 const noLocalPeers = "No rendezvous peers are configured on this machine.";
 const remoteOff = "Direct connection is off on the remote machine, or it has no rendezvous peers.";
@@ -54,7 +55,7 @@ function addresses(): string {
 
 function safeError(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
-  if (/^EasyTier (official download (failed|timed out)|SHA-256 verification failed|archive |did not become ready|exited before becoming ready|v?2\.6\.4 is unsupported)/.test(message))
+  if (/^EasyTier (download failed|SHA-256 verification failed|archive |did not become ready|exited before becoming ready|v?2\.6\.4 is unsupported)/.test(message))
     return message.slice(0, 240);
   if (error instanceof Error && error.name === "TimeoutError") return "EasyTier setup timed out.";
   if (message === "Invalid EasyTier cache file." || message === "Invalid EasyTier cache directory.") return message;

@@ -1,5 +1,6 @@
 import { useRpc, useSubscription, useTranslation } from "@getpaseo/plugin/client";
 import {
+  ExternalLink,
   SettingsAction,
   SettingsCard,
   SettingsRow,
@@ -15,13 +16,23 @@ import {
   direct,
   DirectPeerSchema,
   DirectSettingsSchema,
+  easyTier,
   type DirectSettings,
+  type EasyTierStatus,
 } from "../shared/settings";
 import { errorMessage, messages } from "./messages";
-import { ActionButton, NoticeBox, type PluginLayout, type PluginTheme } from "./ui";
+import { ActionButton, NoticeBox, StatusBadge, type PluginLayout, type PluginTheme, type StatusTone } from "./ui";
 
 const EMPTY_INPUT = {};
 const MAX_DIRECT_PEERS = 16;
+
+const MIB = 1024 * 1024;
+const EASY_TIER_TONE: Record<EasyTierStatus["state"], StatusTone> = {
+  missing: "muted",
+  downloading: "warning",
+  ready: "success",
+  failed: "danger",
+};
 
 function sameStringArray(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((item, index) => item === b[index]);
@@ -366,8 +377,137 @@ export function DirectAccelerationSection({
         </SettingsCard>
       ) : null}
 
+      <EasyTierCard theme={theme} layout={layout} />
+
       <NoticeBox tone="muted" icon="Info" items={noteItems} theme={theme} />
     </SettingsSection>
+  );
+}
+
+/** 本机 EasyTier 组件的安装状态；下载失败或进行中时可改为导入本地 ZIP。 */
+function EasyTierCard({ theme, layout }: { theme: PluginTheme; layout: PluginLayout }) {
+  const { t } = useTranslation(messages);
+  const toast = useToast();
+  const importZip = useRpc(easyTier.import);
+  const [status, setStatus] = useState<EasyTierStatus | null>(null);
+  const subscription = useSubscription(easyTier.watch, EMPTY_INPUT, setStatus);
+  const [pathInput, setPathInput] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+
+  const handleImport = useCallback(async () => {
+    const path = pathInput.trim();
+    if (!path) return;
+    setImportError(null);
+    setImporting(true);
+    try {
+      await importZip({ path });
+      setPathInput("");
+      toast.show(t("direct.easyTierImported"), { variant: "success" });
+    } catch (err) {
+      setImportError(errorMessage(err));
+    } finally {
+      setImporting(false);
+    }
+  }, [importZip, pathInput, t, toast]);
+
+  if (subscription.status === "error") {
+    return (
+      <NoticeBox
+        tone="danger"
+        icon="AlertTriangle"
+        items={[t("direct.easyTierWatchError", { message: subscription.error.message })]}
+        theme={theme}
+      />
+    );
+  }
+  if (!status) return null;
+
+  const { state, progress, official } = status;
+  const stateLabel = {
+    missing: t("direct.easyTierMissing"),
+    downloading: t("direct.easyTierDownloading"),
+    ready: t("direct.easyTierReady"),
+    failed: t("direct.easyTierFailed"),
+  }[state];
+  const received = progress ? (progress.received / MIB).toFixed(1) : "";
+  const hint = state === "missing"
+    ? t("direct.easyTierMissingHint")
+    : progress
+      ? progress.total
+        ? t("direct.easyTierProgress", {
+            received,
+            total: (progress.total / MIB).toFixed(1),
+            percent: Math.floor((progress.received / progress.total) * 100),
+          })
+        : t("direct.easyTierProgressUnknown", { received })
+      : undefined;
+  const canImport = official && (state === "failed" || state === "downloading");
+
+  return (
+    <SettingsCard>
+      <SettingsRow label={t("direct.easyTierLabel")} hint={hint} error={status.error}>
+        <StatusBadge label={stateLabel} tone={EASY_TIER_TONE[state]} theme={theme} />
+      </SettingsRow>
+      {canImport ? (
+        <View
+          style={[
+            styles.peersBlock,
+            {
+              paddingVertical: layout.compact ? 12 : 14,
+              paddingHorizontal: layout.compact ? 14 : 16,
+            },
+          ]}
+        >
+          <Text style={[styles.blockHint, { color: theme.colors.foregroundMuted }]}>
+            {t("direct.easyTierImportHint", { file: official.file })}
+          </Text>
+          <ExternalLink href={official.url}>
+            {t("direct.easyTierOfficialLink", { file: official.file })}
+          </ExternalLink>
+          <View style={styles.addPeerRow}>
+            <TextInput
+              accessibilityLabel={t("direct.easyTierPathLabel")}
+              placeholder={t("direct.easyTierPathPlaceholder", { file: official.file })}
+              placeholderTextColor={theme.colors.foregroundMuted}
+              value={pathInput}
+              onChangeText={(value) => {
+                setPathInput(value);
+                if (importError) setImportError(null);
+              }}
+              onSubmitEditing={() => void handleImport()}
+              editable={!importing}
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={[
+                styles.peerInput,
+                {
+                  color: theme.colors.foreground,
+                  backgroundColor: theme.colors.surface2,
+                  borderColor: importError ? theme.colors.statusDanger : theme.colors.border,
+                },
+              ]}
+            />
+            <ActionButton
+              label={importing ? t("direct.easyTierImporting") : t("direct.easyTierImport")}
+              theme={theme}
+              variant="outline"
+              compact
+              disabled={importing || !pathInput.trim()}
+              onPress={() => void handleImport()}
+            />
+          </View>
+          {importError ? (
+            <Text
+              accessibilityRole="alert"
+              style={[styles.errorText, { color: theme.colors.statusDanger }]}
+            >
+              {importError}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+    </SettingsCard>
   );
 }
 
