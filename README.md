@@ -82,6 +82,8 @@ node dev/rpc.mjs brains.set-relay '{"brainId":"<brainId>","relay":"relay.example
    paseo permit allow <agentId> <requestId>
    ```
 
+通用 ACP provider 在 brain 收到的首条用户消息包含项目说明。hand 的实时和历史时间线显示用户原话。
+
 受限档是默认值。新会话会授权该项目的真实路径，文件工具只可访问已授权项目，`hand_bash` 被拒绝。需要在 hand 运行命令时，可以把该 brain 切为完全档：
 
 ```sh
@@ -89,6 +91,14 @@ node dev/rpc.mjs brains.set-policy '{"brainId":"<brainId>","policy":"full"}'
 ```
 
 完全档允许该 brain 通过 hand 工具访问运行 daemon 的用户能访问的文件和 shell。只对信任的 brain 启用。要恢复受限档，把 `policy` 改回 `restricted`。
+
+## Windows hand
+
+- 使用 Paseo 0.17.3 和 Node 20.19+，让本机 daemon 和 `dev/*.mjs` 读取同一个 `PASEO_HOME`。默认是当前账户的 `%USERPROFILE%\.paseo`；自定义时优先使用绝对路径。Paseo 支持 `~/` 展开，`~\` 不展开。开发脚本从该目录读取 `paseo.pid`、`server-id` 和 `local-credential`，只连接本机命名管道或回环 TCP。配对可直接在 App 中操作。
+- 在私有 NTFS 用户目录下保存 Paseo home。`state.json` 和写入时的暂存文件含设备私钥，Windows 的 `0600` / `0700` 不会限制其他账户读取；插件依赖目录与文件继承的 ACL，不会配置 Windows ACL。自定义目录应先限制其他账户的访问；可用 `icacls (Join-Path $env:PASEO_HOME 'plugin-data\remote-hand')` 检查插件状态目录的权限（先把 `$env:PASEO_HOME` 设为 daemon 实际使用的目录）。不要放到共享目录、网络盘或无法提供账户 ACL 的卷上。
+- 项目使用带盘符的绝对路径（如 `C:\Work Space\repo`）或普通 UNC 路径。受限档按真实目录授权；不接受盘符相对路径、设备路径、NTFS 数据流及命名管道。新建文件需要文件系统支持硬链接；覆盖会用暂存文件替换，Windows 上不会复制目标文件单独设置的 ACL，在验证前请勿用工具覆盖这类文件。网络共享、长路径和文件被其他进程占用时的行为取决于文件系统及 Windows 设置。
+- 完全档的 `hand_bash` 优先使用 PATH 中的 PowerShell 7 (`pwsh.exe`)，再用系统 Windows PowerShell；启动时跳过 profile。取消走 `taskkill /T /F`，已脱离进程树、或父进程先退出的子进程可能无法回收。插件界面当前没有 Git Bash 选项。
+- 尚无 Windows 真机验证。需要实测：安装和出站 relay 配对、重启后复用设备身份、命名管道连接、带空格与不同大小写的路径、junction 越界拒绝、ACL 和文件占用，以及 PowerShell 和进程树取消。
 
 ## 卸载
 
@@ -99,11 +109,11 @@ node dev/rpc.mjs brains.set-policy '{"brainId":"<brainId>","policy":"full"}'
 
 - Brain 的原生工具仍可用。插件通过系统提示或首条用户消息说明项目位置和 `hand_*` 工具；模型可能仍调用 brain 的原生工具。时间线里的工具前缀由所选 provider 决定。受限档约束的是 hand 的工具。
 - 目录和工具输出走 relay；普通请求和开流参数有 128 KiB 帧上限。断线时正在执行的写入或命令可能结果未知，先核对项目和时间线再重试。
-- 最大设备并发数目前可保存，在这一阶段尚不限制任务。Claude 已通过跨机验收；其他 provider 的跨机验收待完成。
+- 最大设备并发数目前可保存，在这一阶段尚不限制任务。Claude 已通过跨机验收；Codex、Antigravity、Grok、Kimi、Pi 已通过跨机 hand 文件读取验证。
 
 ## 状态与开发
 
-端点和设备状态保存在 `$PASEO_HOME/plugin-data/remote-hand/state.json`。在 POSIX 上目录权限为 `0700`，状态文件为 `0600`。移除插件后目录保留，以便重新安装时复用身份。不要复制或分享该目录。
+端点和设备状态保存在 `$PASEO_HOME/plugin-data/remote-hand/state.json`。在 POSIX 上目录权限为 `0700`，状态文件为 `0600`；Windows 依赖目录 ACL，见[Windows hand](#windows-hand)。移除插件后目录保留，以便重新安装时复用身份。不要复制或分享该目录。
 
 运行本地类型检查和设备认证测试（测试需 Node 22.18+）：
 

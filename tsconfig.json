@@ -6,8 +6,9 @@
     "strict": true,
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
+    "allowJs": true,
     "resolveJsonModule": true,
     "noEmit": true
   },
-  "files": ["index.server.ts", "server/identity.test.ts", "server/protocol.test.ts"]
+  "files": ["index.server.ts", "server/daemon-location.test.ts", "server/identity.test.ts", "server/protocol.test.ts"]
 }

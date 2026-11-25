@@ -13,7 +13,7 @@ import {
 import { absolutePath } from "../hand-tools/paths.ts";
 import { errorMessage, toRemoteJson } from "../remote-agent-stream.ts";
 import { createHandMcp, handMcpName } from "./hand-mcp.ts";
-import { agentEvents, fetchPage } from "./timeline.ts";
+import { agentEvents, fetchPage, promptPrefixKey } from "./timeline.ts";
 
 export interface BrainAccess { providers: readonly string[] }
 
@@ -103,6 +103,7 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
 }) {
   if (!path.isAbsolute(paseoHome)) throw new Error("paseoHome must be an absolute brain path.");
   const links = new Map<string, { port: RemoteAgentPort; signal: AbortSignal; close: () => void }>();
+  const acceptingPrompts = new Set<string>();
   const activeTools = new Map<string, Set<AbortController>>();
   const stopping = new Set<string>();
 
@@ -234,12 +235,23 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
         return { agentId: agent.id, modeId };
       });
       handle("agent.prompt", async (input, callSignal) => {
-        const { agent, state, owner } = await owned(input.agentId, callSignal);
-        if (!allowsProvider(access, state.provider)) throw new Error("This brain provider is no longer allowed.");
-        if (owner.delivery === "stdio-prompt" && !state.lastUserMessageAt) {
-          input = { ...input, text: `${projectContext(owner.handCwd, owner.handPlatform)}\n${toolInstructions}\n\nUser request:\n${input.text}` };
+        const { agentId } = input;
+        const promptKey = JSON.stringify([deviceId, agentId]);
+        if (acceptingPrompts.has(promptKey)) throw new Error("A prompt is already being accepted for this session.");
+        acceptingPrompts.add(promptKey);
+        try {
+          const { agent, state, owner } = await owned(agentId, callSignal);
+          if (!allowsProvider(access, state.provider)) throw new Error("This brain provider is no longer allowed.");
+          if (owner.delivery === "stdio-prompt" && !state.lastUserMessageAt) {
+            const prefix = `${projectContext(owner.handCwd, owner.handPlatform)}\n${toolInstructions}\n\nUser request:\n`;
+            // 先持久化边界，再让带前缀的消息进入时间线。只保存标识和长度，不复制用户正文。
+            await agent.setMetadata({ [promptPrefixKey]: { clientMessageId: input.clientMessageId, length: prefix.length } });
+            input = { ...input, text: prefix + input.text };
+          }
+          return await promptTurn(agent, input, callSignal);
+        } finally {
+          acceptingPrompts.delete(promptKey);
         }
-        return promptTurn(agent, input, callSignal);
       });
       handle("agent.cancel", async ({ agentId }, callSignal) => {
         await owned(agentId, callSignal);
@@ -261,8 +273,8 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
       removers.push(port.handle("agent.events", async function* (params, incoming): AsyncGenerator<RemoteAgentJson> {
         const input = remoteAgentStreams["agent.events"].input.parse(params);
         const callSignal = AbortSignal.any([signal, incoming]);
-        const { agent } = await owned(input.agentId, callSignal);
-        for await (const event of agentEvents(agent, input, callSignal)) {
+        const { agent, owner } = await owned(input.agentId, callSignal);
+        for await (const event of agentEvents(agent, input, callSignal, owner.delivery === "stdio-prompt")) {
           yield toRemoteJson(remoteAgentStreams["agent.events"].event.parse(toRemoteJson(event)));
         }
       }));

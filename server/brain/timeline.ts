@@ -1,8 +1,11 @@
 import type { PaseoAgentHandle, PaseoAgentTimelineEvent } from "@getpaseo/client";
+import { z } from "zod";
 import { remoteAgentObject, type RemoteAgentCursor, type RemoteAgentEvent } from "../../shared/remote-agent.ts";
 import { RemoteEventQueue, toRemoteJson } from "../remote-agent-stream.ts";
 
 type Page = Awaited<ReturnType<PaseoAgentHandle["timeline"]["refetch"]>>;
+export const promptPrefixKey = "remote-hand.prompt-prefix";
+const promptPrefixSchema = z.object({ clientMessageId: z.string().min(1), length: z.int().positive() });
 
 export async function fetchPage(agent: PaseoAgentHandle, options: Parameters<PaseoAgentHandle["timeline"]["refetch"]>[0]) {
   const page = await agent.timeline.refetch(options);
@@ -10,11 +13,16 @@ export async function fetchPage(agent: PaseoAgentHandle, options: Parameters<Pas
   return page;
 }
 
-function project(page: Page): RemoteAgentEvent[] {
-  return page.entries.map((row) => ({
-    type: "timeline", timestamp: row.timestamp, revision: row.seqEnd,
-    // after 页可以包含跨游标合并的文本或工具生命周期。稳定 ID 让 hand 应用增量。
-    item: remoteAgentObject.parse(toRemoteJson({ ...row.item, id: `${page.epoch}:${row.seqStart}` })),
+function project(page: Page, prefix: z.infer<typeof promptPrefixSchema> | undefined): RemoteAgentEvent[] {
+  return page.entries.map(({ item, timestamp, seqStart, seqEnd }) => ({
+    type: "timeline", timestamp, revision: seqEnd,
+    // 锚定提交 ID，只从这一行移除已记录的前缀。保留内容及稳定 ID 供 hand 合并增量。
+    item: remoteAgentObject.parse(toRemoteJson({
+      ...item, id: `${page.epoch}:${seqStart}`,
+      ...(prefix && item.type === "user_message" && item.clientMessageId === prefix.clientMessageId && {
+        text: item.text.slice(prefix.length),
+      }),
+    })),
   }));
 }
 
@@ -24,6 +32,7 @@ export async function* agentEvents(
   agent: PaseoAgentHandle,
   input: { cursor?: RemoteAgentCursor; history: "replay" | "skip" },
   signal: AbortSignal,
+  prefixesPrompts: boolean,
 ): AsyncGenerator<RemoteAgentEvent> {
   const queue = new RemoteEventQueue<Change>(1024);
   let cursor = input.cursor;
@@ -78,7 +87,15 @@ export async function* agentEvents(
         continue;
       }
       through ??= page.window.maxSeq;
-      for (const event of project(page)) yield event;
+      let prefix = promptPrefixSchema.safeParse(page.agent?.metadata?.[promptPrefixKey]).data;
+      if (prefixesPrompts && (!prefix || !page.agent?.lastUserMessageAt) && page.entries.some(({ item }) => item.type === "user_message")) {
+        // 0.17.3 先取 agent 快照再取行；并发的首条消息可能刚好落在两次读取之间。
+        const result = await agent.refresh();
+        signal.throwIfAborted();
+        if (!result) throw new Error("Remote agent is no longer available.");
+        prefix = promptPrefixSchema.safeParse(result.agent.metadata?.[promptPrefixKey]).data;
+      }
+      for (const event of project(page, prefix)) yield event;
       const seq = page.hasNewer ? page.endCursor?.seq : page.window.maxSeq;
       if (seq === undefined || (page.hasNewer && cursor && seq <= cursor.seq)) {
         throw new Error("Brain returned a timeline page without progress.");

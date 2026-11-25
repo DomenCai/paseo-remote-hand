@@ -7,7 +7,7 @@ import {
   type RemoteAgentCursor, type RemoteAgentEvent, type RemoteAgentJson, type RemoteAgentPlatform, type RemoteAgentPort,
 } from "../../shared/remote-agent.ts";
 import { executeHandTool } from "../hand-tools/index.ts";
-import { absolutePath } from "../hand-tools/paths.ts";
+import { absolutePath, sameCanonicalPath } from "../hand-tools/paths.ts";
 import { errorMessage, RemoteEventQueue, remoteRequest, toRemoteJson } from "../remote-agent-stream.ts";
 
 export interface HandBrain {
@@ -351,7 +351,8 @@ export function createHandProvider(directory: HandBrainDirectory) {
               if (input.persistence) {
                 if (input.persistence.version !== 1) throw new Error("Unrecognized Remote Hand persistence version.");
                 data = persistenceSchema.parse(input.persistence.data);
-                if (data.cwd !== cwd) throw new Error("This remote session belongs to a different hand workspace.");
+                if (!await sameCanonicalPath(data.cwd, cwd)) throw new Error("This remote session belongs to a different hand workspace.");
+                data.cwd = cwd;
                 if (!directory.listBrains().some(({ id }) => id === data.brainId)) throw new Error("This brain is no longer paired.");
               } else {
                 const target = parseModel(input.config.model ?? (await getCatalog()).defaultModel);

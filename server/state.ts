@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { exportPublicKey, exportSecretKey, generateKeyPair } from "@getpaseo/relay/e2ee";
 import { z } from "zod";
 import { AccessSchema, BrainOsSchema, BrainPolicySchema, BrainSchema, DEFAULT_RELAY, RelayAddressSchema } from "../shared/settings.ts";
 import { DeviceKeySchema } from "./identity.ts";
+import { resolvePaseoHome } from "./daemon-location.mjs";
 
 const StateSchema = z.object({
   version: z.literal(1),
@@ -34,12 +34,6 @@ const StateSchema = z.object({
 type State = z.infer<typeof StateSchema>;
 export type StoredBrain = State["brains"][string];
 
-export function resolvePaseoHome(): string {
-  const raw = process.env.PASEO_HOME ?? "~/.paseo";
-  const home = raw === "~" ? homedir() : raw.startsWith("~/") ? join(homedir(), raw.slice(2)) : raw;
-  return resolve(home);
-}
-
 export function pluginStateDir(paseoHome = resolvePaseoHome()): string {
   return join(paseoHome, "plugin-data", "remote-hand");
 }
@@ -51,6 +45,7 @@ export class StateStore {
   constructor(dir: string) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     this.#file = join(dir, "state.json");
+    // Windows 的状态文件及其暂存文件继承目录 ACL；POSIX mode 不能提供同等保护。
     if (process.platform !== "win32") chmodSync(dir, 0o700);
     if (existsSync(this.#file)) {
       if (process.platform !== "win32") chmodSync(this.#file, 0o600);
