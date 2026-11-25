@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import type { PaseoAgentHandle, PaseoAgentTimelineEvent, PaseoApi, PaseoWorkspaceAgentCreateOptions } from "@getpaseo/client";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { PluginHookPayload, PluginServerContext, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
 import { ProviderEventSchema, type ProviderEvent, type ProviderSessionConfig } from "@getpaseo/plugin/server/provider";
@@ -61,7 +62,9 @@ type Item = Awaited<ReturnType<PaseoAgentHandle["timeline"]["refetch"]>>["entrie
 type OpenHook = (payload: PluginHookPayload<"agent.open.before">) => Promise<PluginSessionOpenRequest | undefined>;
 type CloseHook = (payload: PluginHookPayload<"agent.close.after">) => Promise<void>;
 
-function fakePaseo() {
+type CatalogEntry = Awaited<ReturnType<PaseoApi["providers"]["snapshot"]>>["entries"][number];
+
+function fakePaseo(extraProviders: CatalogEntry[] = [], providerBases: Record<string, string> = {}) {
   let openHook: OpenHook | undefined;
   let closeHook: CloseHook | undefined;
   const records = new Map<string, ReturnType<typeof record>>();
@@ -102,6 +105,7 @@ function fakePaseo() {
     function snapshot(): State {
       return {
         id, cwd, provider, metadata: opts.metadata, pendingPermissions: pending, status: active ? "running" : "idle",
+        lastUserMessageAt: rows.findLast(({ item }) => item.type === "user_message")?.timestamp ?? null,
         activeTurn: active ? { turnId: active, startedAt: null } : null,
       } as State;
     }
@@ -153,21 +157,29 @@ function fakePaseo() {
   }
 
   const api = {
+    config: { async get() {
+      const providers = Object.fromEntries(Object.entries({ "claude-sub": "claude", ...providerBases })
+        .map(([id, base]) => [id, { extends: base }]));
+      return { config: { providers } };
+    } },
     providers: {
       async snapshot() {
         return { entries: [
           { provider: "claude-sub", label: "Claude", status: "loading", enabled: true, defaultModeId: "default" },
           { provider: "private", label: "Private", status: "loading" },
           { provider: "remote-hand", label: "Remote Hand", status: "loading" },
+          ...extraProviders,
         ] };
       },
       async listModels(provider: string) {
-        assert.equal(provider, "claude-sub");
-        return { models: [{ id: "claude/sonnet", label: "Sonnet 5.5", isDefault: true }] };
+        if (provider === "claude-sub") return { models: [{ id: "claude/sonnet", label: "Sonnet 5.5", isDefault: true }] };
+        assert.equal(provider, "private", `unexpected provider: ${provider}`);
+        return { models: [] };
       },
       async listModes(provider: string) {
-        assert.equal(provider, "claude-sub");
-        return { modes: [{ id: "default", label: "Default" }] };
+        if (provider === "claude-sub") return { modes: [{ id: "default", label: "Default" }] };
+        assert.equal(provider, "private", `unexpected provider: ${provider}`);
+        return { modes: [] };
       },
     },
     workspaces: {
@@ -320,7 +332,8 @@ test("brain ↔ hand loopback: prompts, hand tools, permissions, stop, reconnect
   t.after(() => client.close());
   const { tools } = await client.listTools();
   assert.deepEqual(tools.map(({ name }) => name).sort(), ["hand_bash", "hand_edit", "hand_glob", "hand_grep", "hand_read", "hand_write"]);
-  assert.ok(agent.launch?.appendSystemPrompt?.join(" ").includes("mcp__remote-hand__hand_read"));
+  assert.match(agent.launch?.appendSystemPrompt?.join(" ") ?? "", /\bhand_read\b/);
+  assert.doesNotMatch(agent.launch?.appendSystemPrompt?.join(" ") ?? "", /mcp__/);
   async function tool(name: string, input: object, signal?: AbortSignal) {
     const result = await client.callTool({ name, arguments: input }, undefined, { signal });
     const [content] = result.content as { type: string; text: string }[];
@@ -436,4 +449,105 @@ test("brain ↔ hand loopback: prompts, hand tools, permissions, stop, reconnect
   assert.match((await tool("hand_read", { path: file })).text!, /outside the authorized roots/);
   await connection.close();
   await eventually(() => agent.listeners.size === 0 && true, "SDK timeline listeners released");
+});
+
+test("brain ↔ hand loopback: ACP prefixes only the first prompt and uses authenticated stdio MCP", { timeout: 10_000 }, async (t) => {
+  const dir = await realpath(await mkdtemp(path.join(tmpdir(), "remote-agent-acp-test-")));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const cwd = path.join(dir, "hand");
+  await mkdir(cwd);
+  const file = path.join(cwd, "local.txt");
+  await writeFile(file, "read from the hand over stdio MCP");
+  const fake = fakePaseo([
+    {
+      provider: "acp-future", label: "Custom ACP", status: "ready", enabled: true,
+      models: [{ provider: "acp-future", id: "test", label: "Test ACP" }], modes: [],
+    },
+    {
+      provider: "codex-sub", label: "Codex", status: "ready", enabled: true,
+      models: [{ provider: "codex-sub", id: "gpt-6.2", label: "GPT-6.2" }],
+      modes: [{ id: "auto", label: "Auto" }, { id: "full-access", label: "Full Access" }], defaultModeId: "auto",
+    },
+    {
+      provider: "disabled", status: "ready", enabled: false,
+      models: [{ provider: "disabled", id: "disabled", label: "Disabled" }],
+    },
+  ], { "acp-future": "acp", "codex-sub": "codex" });
+  const service = createBrainAgentService({ paseoHome: path.join(dir, "brain"), async cancelAgent() {} });
+  t.after(service.registerHook(fake.hook));
+  t.after(service.close);
+  const access = { providers: [] as string[] };
+  const pair = loopback();
+  service.attach({ deviceId: "device-1", paseo: fake.api, access, port: pair.brain });
+  const hand = createHandProvider({
+    listBrains: () => [{ id: "mini", name: "Mac mini", port: pair.hand }],
+    subscribe: () => () => {},
+    async readPolicy() { return { mode: "restricted", projects: [cwd] }; },
+    async authorizeProject() {},
+  });
+  t.after(async () => { pair.disconnect(); await hand.dispose(); });
+  const connection = await hand.registration.connect({ versions: [1], capabilities: ["prompt.message", "session.persistence"] });
+  const events: ProviderEvent[] = [];
+  connection.onEvent((event) => events.push(ProviderEventSchema.parse(event)));
+
+  await connection.send({ type: "catalog", requestId: "catalog" });
+  const catalog = events.find((event) => event.type === "catalog" && event.requestId === "catalog")!;
+  assert.deepEqual(catalog.catalog.models.map(({ label }) => label), [
+    "Mac mini · Claude · Sonnet 5.5", "Mac mini · Custom ACP · Test ACP", "Mac mini · Codex · GPT-6.2",
+  ]);
+  assert.equal(catalog.catalog.defaultMode, "remote-hand:brain-default");
+  assert.deepEqual(catalog.catalog.modes.map(({ id }) => id), ["remote-hand:brain-default", "default", "auto", "full-access"]);
+
+  const create = { provider: "codex-sub", model: "gpt-6.2", handCwd: cwd, handPlatform: process.platform };
+  for (const requested of [undefined, "auto"]) {
+    const reply = await pair.hand.request("agent.create", toRemoteJson({ ...create, modeId: requested })) as { agentId: string; modeId: string };
+    const agent = fake.records.get(reply.agentId)!;
+    assert.equal(agent.opts.config.modeId, requested ?? "full-access");
+    assert.equal(reply.modeId, agent.opts.config.modeId);
+    assert.match(agent.launch?.appendSystemPrompt?.join(" ") ?? "", /\bhand_read\b/);
+  }
+  access.providers = ["acp-future"];
+  await assert.rejects(pair.hand.request("agent.create", create), /not available/);
+
+  const sessionId = "local-acp";
+  await connection.send({ type: "session.open", requestId: "open", sessionId, history: "skip", config: {
+    cwd, model: "mini/acp-future/test", mode: catalog.catalog.defaultMode, env: {}, mcpServers: {}, settings: {}, persist: true,
+  } });
+  await eventually(() => events.some((event) => event.type === "session.ready" && event.sessionId === sessionId), JSON.stringify(events));
+  const opened = events.find((event) => event.type === "session.opened" && event.sessionId === sessionId)!;
+  const { agentId, modeId } = opened.persistence!.data as { agentId: string; modeId?: string };
+  const agent = fake.records.get(agentId)!;
+  assert.equal(modeId, undefined);
+  assert.equal(agent.opts.config.modeId, undefined);
+  assert.equal(agent.opts.config.systemPrompt, undefined);
+  assert.equal(agent.launch?.appendSystemPrompt, undefined);
+
+  const mcp = agent.launch?.mcpServers["remote-hand"];
+  assert.ok(mcp?.type === "stdio");
+  const client = new Client({ name: "test", version: "0.0.0" });
+  t.after(() => client.close());
+  await client.connect(new StdioClientTransport(mcp));
+
+  await connection.send({ type: "session.prompt", sessionId, prompt: {
+    clientMessageId: "first", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "read the file" }] },
+  } });
+  const first = (await agent.handle.timeline.refetch({ direction: "tail", limit: 1 })).entries[0].item;
+  assert.ok(first.type === "user_message");
+  assert.ok(first.text.includes(JSON.stringify(cwd)));
+  assert.match(first.text, /\bhand_read\b/);
+  assert.doesNotMatch(first.text, /mcp__/);
+  assert.match(first.text, /User request:\nread the file$/);
+  const result = await client.callTool({ name: "hand_read", arguments: { path: file } });
+  assert.notEqual(result.isError, true);
+  const [content] = result.content as { type: string; text: string }[];
+  assert.equal(content.type, "text");
+  assert.match(content.text, /read from the hand over stdio MCP$/);
+  agent.finish("completed");
+
+  await connection.send({ type: "session.prompt", sessionId, prompt: {
+    clientMessageId: "next", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "follow up" }] },
+  } });
+  const next = (await agent.handle.timeline.refetch({ direction: "tail", limit: 1 })).entries[0].item;
+  assert.ok(next.type === "user_message");
+  assert.equal(next.text, "follow up");
 });

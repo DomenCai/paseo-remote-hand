@@ -1,12 +1,12 @@
 # Remote hand
 
-Remote hand 是 Paseo 插件。**hand** 是保存项目的本机，**brain** 是运行 agent 的机器；每台机器可以同时承担两种角色。在 hand 上选择 `remote-hand`，Claude 会话在 brain 运行，项目读写和命令由 hand 的工具执行。
+Remote hand 是 Paseo 插件。**hand** 是保存项目的本机，**brain** 是运行 agent 的机器；每台机器可以同时承担两种角色。在 hand 上选择 `remote-hand` 和远端模型，所选 provider 的会话在 brain 运行，项目读写和命令由 hand 的工具执行。
 
 两端通过插件自己的 relay 端点建立 protected Noise 通道。默认使用 `relay.paseo.sh:443`，自建 relay 需提供同样的 v2 协议和有效 TLS。无需启用 Paseo daemon 的 relay，也无需交换 daemon 配对链接。配对码五分钟内有效，只能使用一次；通过私密渠道交给预期设备。
 
 ## 安装
 
-两端都安装 Paseo 0.17.3 并启用插件。brain 需要能在 Paseo 内运行已登录的 Claude。插件会为自己的会话注入 MCP；无需开启 daemon 的 MCP 注入或 Claude 的 Paseo Tools。在插件目录执行：
+两端都安装 Paseo 0.17.3 并启用插件。brain 需要能在 Paseo 内运行所选 provider。插件会为自己的会话注入 MCP；无需开启 daemon 的 MCP 注入或 Claude 的 Paseo Tools。在插件目录执行：
 
 ```sh
 npm ci --omit=dev --ignore-scripts
@@ -60,7 +60,7 @@ node dev/rpc.mjs brains.set-relay '{"brainId":"<brainId>","relay":"relay.example
 
 ## 使用
 
-1. 在 hand 上运行 `paseo provider models remote-hand`，复制一个形如 `<brainId>/claude/<model>` 的模型 ID。也可在 `node dev/watch.mjs brains.watch --once` 的 `models` 中查看。
+1. 在 hand 上运行 `paseo provider models remote-hand`，复制一个形如 `<brainId>/<provider>/<model>` 的模型 ID。也可在 `node dev/watch.mjs brains.watch --once` 的 `models` 中查看。brain 的「已连接设备」可限制开放的 provider；开启「允许全部 provider」时，目录列出 brain 上可用的模型。
 2. 从 hand 的项目目录发起会话。例如：
 
    ```sh
@@ -70,6 +70,8 @@ node dev/rpc.mjs brains.set-relay '{"brainId":"<brainId>","relay":"relay.example
    ```
 
    加 `--new-workspace local` 会按指定目录新建 workspace。省略这个选项时，Paseo 可能沿用当前 agent 或终端的 workspace。
+
+   省略 `--mode`，或在 App 里选择 **Use brain default**，由 brain 根据所选 provider 决定 mode。新建会话时，App 的 mode 列表合并各个 brain 提供的选项；手动选择时，请使用目标 provider 支持的 mode。Cursor 的 hand 工具仍会请求审批。
 3. 用命令返回的 **hand agent ID** 查看时间线、等待或停止；如果出现权限请求，用对应请求 ID 应答。
 
    ```sh
@@ -95,9 +97,9 @@ node dev/rpc.mjs brains.set-policy '{"brainId":"<brainId>","policy":"full"}'
 
 ## 已知问题
 
-- M1a 只暴露 Claude。Brain 的原生工具仍可用；时间线中的 hand 工具以 `mcp__remote-hand__hand_*` 显示，系统提示要求用这些工具操作项目，但模型可能仍调用 brain 原生工具。受限档约束的是 hand 的工具。
+- Brain 的原生工具仍可用。插件通过系统提示或首条用户消息说明项目位置和 `hand_*` 工具；模型可能仍调用 brain 的原生工具。时间线里的工具前缀由所选 provider 决定。受限档约束的是 hand 的工具。
 - 目录和工具输出走 relay；普通请求和开流参数有 128 KiB 帧上限。断线时正在执行的写入或命令可能结果未知，先核对项目和时间线再重试。
-- 最大设备并发数目前可保存，在这一阶段尚不限制任务。其他 provider 尚未验收。
+- 最大设备并发数目前可保存，在这一阶段尚不限制任务。Claude 已通过跨机验收；其他 provider 的跨机验收待完成。
 
 ## 状态与开发
 

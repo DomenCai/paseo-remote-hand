@@ -70,7 +70,7 @@ export const remoteAgentRequests = {
       provider: providerId, model: id, modeId: id.optional(), handCwd: id.max(32767),
       handPlatform: platform, title: z.string().optional(),
     }),
-    output: agent.extend({ modeId: id }),
+    output: agent.extend({ modeId: id.optional() }),
   },
   "agent.prompt": {
     input: agent.extend({

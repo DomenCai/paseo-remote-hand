@@ -27,7 +27,7 @@ export interface HandBrainDirectory {
 }
 
 const persistenceSchema = z.strictObject({
-  brainId: z.string().min(1), agentId: z.string().min(1), cwd: z.string().min(1), model: z.string().min(1), modeId: z.string().min(1),
+  brainId: z.string().min(1), agentId: z.string().min(1), cwd: z.string().min(1), model: z.string().min(1), modeId: z.string().min(1).optional(),
 });
 type Session = z.infer<typeof persistenceSchema> & {
   id: string;
@@ -47,6 +47,8 @@ type Session = z.infer<typeof persistenceSchema> & {
   stopping: boolean;
   inFlightMutations: Set<object>;
 };
+
+const brainDefaultMode = "remote-hand:brain-default";
 
 const notices = {
   waiting: { id: "remote-hand.waiting", title: "等待本机", severity: "warning" as const },
@@ -282,7 +284,6 @@ export function createHandProvider(directory: HandBrainDirectory) {
     }));
     const models: ProviderModel[] = [];
     const modes = new Map<string, ProviderMode>();
-    let defaultMode: string | undefined;
     for (const result of results) {
       if (result.status !== "fulfilled") continue;
       for (const provider of result.value) {
@@ -291,13 +292,16 @@ export function createHandProvider(directory: HandBrainDirectory) {
           label: `${provider.brainName} · ${provider.label} · ${model.label}`,
         });
         for (const mode of provider.modes) if (!modes.has(mode.id)) modes.set(mode.id, mode);
-        defaultMode ??= provider.defaultMode;
       }
     }
     const defaultModel = models.find(({ isDefault }) => isDefault)?.id ?? models[0]?.id;
+    // Paseo 0.17.3 会为整个 provider 自动选一个 mode；代理的默认项把决定留给选中模型所在的 brain。
+    const automatic = { id: brainDefaultMode, label: "Use brain default" };
     return {
       models: models.map((model) => ({ ...model, isDefault: model.id === defaultModel })),
-      modes: [...modes.values()], defaultMode, defaultModel,
+      modes: defaultModel ? [automatic, ...modes.values()] : [],
+      defaultMode: defaultModel ? brainDefaultMode : undefined,
+      defaultModel,
     };
   }
 
@@ -356,12 +360,17 @@ export function createHandProvider(directory: HandBrainDirectory) {
                 const handPlatform = z.enum(["darwin", "linux", "win32"]).parse(process.platform) satisfies RemoteAgentPlatform;
                 signal.throwIfAborted();
                 const created = await remoteRequest(port, "agent.create", {
-                  provider: target.provider, model: target.model, modeId: input.config.mode, handPlatform, handCwd: cwd,
+                  provider: target.provider, model: target.model, handPlatform, handCwd: cwd,
+                  modeId: input.config.mode === brainDefaultMode ? undefined : input.config.mode,
                   title: input.config.title,
                 }, signal);
                 signal.throwIfAborted();
                 await directory.authorizeProject(target.brainId, cwd);
-                data = { brainId: target.brainId, agentId: created.agentId, cwd, model: `${target.brainId}/${target.provider}/${target.model}`, modeId: created.modeId };
+                data = {
+                  brainId: target.brainId, agentId: created.agentId, cwd,
+                  model: `${target.brainId}/${target.provider}/${target.model}`,
+                  ...(created.modeId !== undefined && { modeId: created.modeId }),
+                };
               }
               signal.throwIfAborted();
               const session: Session = {
