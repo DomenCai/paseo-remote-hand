@@ -11,3 +11,7 @@ Brain 先在 agent 元数据持久化首条提交的 `clientMessageId` 和前缀
 Paseo 0.17.3 的 App 会为代理 provider 预选目录默认 mode，目录接口没有所选模型参数。`Use brain default` 让这一默认选择在发送前回到省略 mode 的语义。Grok 和 Pi 实测能完成工具调用，但没有可选 mode；此时 brain 也省略 mode，让目标 provider 自己处理。
 
 依据：Paseo `8d287e5f5` 的 `provider-registry.ts`、`acp-agent.ts`、`resolve-agent-form.ts` 和 Antigravity 的 `server/provider.ts`；本插件的 [回环测试](../../server/provider/remote-agent.test.ts) 覆盖自定义 ACP 首条指令、时间线实时与历史投影和 stdio 工具读取。mm-xxt 已验收 Codex、Antigravity、Grok、Kimi、Pi 通过 `hand_*` 跨机读取随机文件。
+
+## 兼容 Paseo 0.16.1（2026-11-25）
+
+`agent.open.before` 的 `appendSystemPrompt` 直到 npm 发布的 0.17.0 才有；0.16.1、0.16.2 的钩子输出是严格 schema，多出这个字段会让创建 agent 失败（`Unrecognized key: "appendSystemPrompt"`）。仓库主干上"同步 0.16.1"的提交比实际发布版新，按源码判断会误以为 0.16.1 已支持，以 npm 包为准。工具说明因此与项目说明一起放进创建 agent 时的 `config.systemPrompt`，钩子只注入 MCP 和环境变量。在 mm-xxt 上用两个 0.16.1 临时 daemon 实测：Codex 受限档读文件、`hand_bash` 被拒，完全档执行命令，停止结束 hand 进程，Grok 首条消息前缀与时间线还原均通过；本机 0.17.4 临时 daemon 上 Claude 按说明调用了 `hand_read`。
