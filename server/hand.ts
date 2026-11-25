@@ -16,8 +16,8 @@ import { Snapshots } from "./snapshots.ts";
 import type { StateStore, StoredBrain } from "./state.ts";
 
 const relayMoveSchema = z.object({ relay: RelayAddressSchema });
-type View = Pick<Brain, "status" | "transport" | "lastError" | "models">;
-type Slot = { stop: AbortController; view: View; peer?: Peer; route?: SelectedPort; refreshDirect?: () => void };
+type View = Pick<Brain, "status" | "transport" | "lastError" | "directRetryAt" | "models">;
+type Slot = { stop: AbortController; view: View; peer?: Peer; route?: SelectedPort; direct?: ReturnType<typeof handDirect> };
 
 async function maintain(peer: Peer, afterPing: () => void): Promise<ProtocolError> {
   const stop = new AbortController();
@@ -132,7 +132,12 @@ export class HandService {
   }
 
   directSettingsChanged(): void {
-    for (const slot of this.#slots.values()) slot.refreshDirect?.();
+    for (const slot of this.#slots.values()) slot.direct?.refresh();
+  }
+
+  retryDirect(brainId: string): void {
+    this.#brain(brainId);
+    this.#slots.get(brainId)?.direct?.retryNow();
   }
 
   readPolicy(brainId: string): { mode: "full" } | { mode: "restricted"; projects: string[] } {
@@ -269,12 +274,13 @@ export class HandService {
             const route = slot.route = new SelectedPort(link.port);
             // 发布稳定端口，让 provider 先安装 tool.call handler。
             this.snapshots.changed();
-            slot.refreshDirect = handDirect({
+            slot.direct = handDirect({
               relay: link, route, brain, stateDir: this.#store.dir, settings: () => this.#store.current.direct,
-              status: (transport, lastError) => {
+              status: (transport, lastError, directRetryAt) => {
                 if (!active() || slot.peer !== link || link.failure) return;
-                if (slot.view.transport === transport && slot.view.lastError === lastError) return;
-                slot.view = { ...slot.view, transport, lastError };
+                const { view } = slot;
+                if (view.transport === transport && view.lastError === lastError && view.directRetryAt === directRetryAt) return;
+                slot.view = { ...view, transport, lastError, directRetryAt };
                 this.snapshots.changed();
               },
             });
@@ -302,7 +308,7 @@ export class HandService {
         peer?.close();
         slot.peer = undefined;
         slot.route = undefined;
-        slot.refreshDirect = undefined;
+        slot.direct = undefined;
       }
       if (!active()) return;
       const revoked = failure.code === "revoked";

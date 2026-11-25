@@ -11,7 +11,11 @@ node dev/watch.mjs direct.watch
 node dev/watch.mjs brains.watch
 ```
 
-`direct` 是机器级设置，同时用于本机的 hand 和 brain。默认是 `{"enabled":false,"peers":[]}`。可将 `enabled` 设为 `false` 暂时回到 relay，保留 peers 供下次使用。hand 的 `brains.watch` 显示当前首选链路；brain 的 `endpoint.watch` 可看到本地 EasyTier 启动错误。下载、校验或建链失败时 relay 仍可用，hand 的 `lastError` 显示失败原因。更新任一端直连设置，或重新认证 relay，即可再发起协商。
+`direct` 是机器级设置，同时用于本机的 hand 和 brain。默认是 `{"enabled":false,"peers":[]}`。可将 `enabled` 设为 `false` 暂时回到 relay，保留 peers 供下次使用。hand 的 `brains.watch` 显示当前首选链路；brain 的 `endpoint.watch` 可看到本地 EasyTier 启动错误。下载、校验或建链失败时 relay 仍可用，hand 的 `lastError` 显示失败原因，`directRetryAt` 是下次自动重试的时间（Unix 毫秒）。跳过等待立即重试：
+
+```sh
+node dev/rpc.mjs brains.retry-direct '{"brainId":"<brainId>"}'
+```
 
 `server/direct/easytier-release.ts` 记录 [EasyTier v2.6.4 官方附件](https://github.com/EasyTier/EasyTier/releases/tag/v2.6.4)的完整 URL、ZIP 和所需成员的 SHA-256。安装缓存位于插件状态目录的 `easytier/v2.6.4/<平台>-<架构>`，支持 macOS arm64/x64、Linux x64/arm64 和 Windows x64。只解压固定成员，每次启动前复核缓存。EasyTier 按 LGPL v3 作为独立子进程运行，插件不打包它的二进制。上游[源码](https://github.com/EasyTier/EasyTier/tree/v2.6.4)和[许可证](https://github.com/EasyTier/EasyTier/blob/v2.6.4/LICENSE)对应同一标签。
 
@@ -26,14 +30,20 @@ npm test
 npm run test:direct
 ```
 
-`npm run test:direct` 会获取本平台的官方 ZIP。已有 ZIP 时可用 `EASYTIER_TEST_ZIP=/absolute/path/to/release.zip npm run test:direct`，两种方式都校验摘要。测试不使用公网 peers 或 STUN。它启动本机双实例，先验证四个仿真服务在正对照中均能收到并回包，然后开启 ACL 验证两方向的 TCP、UDP 探针均到不了目标服务。同一测试覆盖允许入口的 M0 认证、96 KiB payload、错误密钥、未知和撤销设备、进程退出清理。
+`npm run test:direct` 会获取本平台的官方 ZIP。已有 ZIP 时可用 `EASYTIER_TEST_ZIP=/absolute/path/to/release.zip npm run test:direct`，两种方式都校验摘要。测试不使用公网 peers 或 STUN。它启动本机双实例，先验证四个仿真服务在正对照中均能收到并回包，然后开启 ACL 验证两方向的 TCP、UDP 探针均到不了目标服务。同一测试覆盖允许入口的 M0 认证、96 KiB payload、错误密钥、未知和撤销设备、进程退出清理。另一项测试让两端 EasyTier 在回环上直接互连、缩短退避，覆盖掉线后自动恢复、频繁掉线用最长间隔、立即重试、对端关闭直连后不重试，以及撤销后清掉重试计时器。
 
 ## 生命周期
 
 1. hand 从已认证的 relay 发送 `direct.offer`。brain 为该代生成临时网络名和密钥，通过该加密连接返回。两端各自采用本机配置的会合 URL。
 2. brain 的回环入口只接收和 relay 相同的设备身份。hand 在 EasyTier 转发上完成 Noise NK 和设备认证，安装入站 handler 后发送 `direct.ready`。brain 安装 handler 并发出确认，两端才启用直连出站。
 3. 应用端口和授权仍跟随原 relay 的生命周期。链路切换不会替换端口或移动在途操作。断掉的时间线流可以从已接收的游标续订；业务请求和工具不自动重发。工具的新建流在插件日志记录 `Remote hand tool.call transport=direct` 或 `transport=relay`，日志不包含调用参数。
-4. POSIX 上实例目录为 `0700`，启动配置文件为 `0600`。网络秘密不在命令行、插件日志或持久设置中。正常关闭及启动失败会回收进程和文件；宿主被强杀时，操作系统不保证运行清理回调。
+4. hand 每 10 秒在直连上发一次 `ping`（5 秒超时），连续 3 次无响应即判定断开、回落 relay，不等 TCP 超时。直连关闭或 EasyTier 进程退出时立即回落。
+5. 回落后按失败类型处理，每台 brain 各自独立：
+   - 永久性失败不自动重试，`lastError` 写明原因，`directRetryAt` 省略：本机已启用但没配会合 peer、对端未启用直连或没配 peer、对端不支持直连、平台不受支持、EasyTier 文件校验失败。本机未启用直连时不提示。等本机 `direct.set` 或对端发来 `direct.changed` 再协商。
+   - 其余失败（打洞或协商失败、下载失败、直连断开、EasyTier 进程退出）是临时性的，按 5 秒、15 秒、30 秒、1 分钟、2 分钟、5 分钟退避，每次 ±20% 随机抖动，上限 5 分钟。直连建立成功后退避回到起点；10 分钟内掉线 3 次及以上时直接用 5 分钟。
+   - 等待期间每 10 秒检查一次本机网卡地址集合和墙钟漂移。网络变化、睡眠唤醒或用户调用 `brains.retry-direct` 时立即重试，退避回到起点。relay 重连会新建整个直连状态。协商进行中或直连已建立时，`brains.retry-direct` 不做任何事。
+   - 设备撤销、relay 断开或直连关闭时，进行中的尝试和重试等待一起结束，不留后台计时器。
+6. POSIX 上实例目录为 `0700`，启动配置文件为 `0600`。网络秘密不在命令行、插件日志或持久设置中。正常关闭及启动失败会回收进程和文件；宿主被强杀时，操作系统不保证运行清理回调。
 
 实例只启用 no-tun 和指定端口的固定转发。Hand 拒绝所有新入站；brain 只接收对端虚拟 IP 发往直连入口的 TCP。两端都拒绝转发其他入站流量。管理 RPC 服务在 v2.6.4 总会创建，因此显式绑定回环，并使用不匹配回环客户端地址的白名单。见 [no-tun 入口取舍与源码](../.agents/notes/2026-11-24-easytier-no-tun-boundary.md)。
 
