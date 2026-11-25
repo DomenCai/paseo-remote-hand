@@ -11,6 +11,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { generateKeyPair, exportPublicKey, importPublicKey, importSecretKey } from "@getpaseo/relay/e2ee";
 import type { EasyTierStatus } from "../../shared/settings.ts";
 import { BrainService } from "../brain.ts";
+import { ProtocolError } from "../frames.ts";
 import { digest, newDeviceKey } from "../identity.ts";
 import { Peer } from "../protocol.ts";
 import { StateStore } from "../state.ts";
@@ -140,6 +141,42 @@ test("EasyTier rejects an altered archive and stays disabled with no peers", asy
   await assert.rejects(importEasyTier(directory, invalid), /archive SHA-256 verification failed/);
 });
 
+// relay 用内存中的一对 Peer 代替。
+async function relayPair(t: TestContext) {
+  const transfer = (other: () => Peer) => async (text: string) => { queueMicrotask(() => other().receive(text)); };
+  const relayHand: Peer = new Peer(transfer(() => relayBrain), () => queueMicrotask(() => relayBrain.close()));
+  const relayBrain: Peer = new Peer(transfer(() => relayHand), () => queueMicrotask(() => relayHand.close()));
+  relayHand.start();
+  relayBrain.start();
+  t.after(() => relayHand.close());
+  await Promise.all([relayHand.ready, relayBrain.ready]);
+  relayHand.activate("hand");
+  relayBrain.activate("brain");
+  return { relayHand, relayBrain };
+}
+
+test("对端返回不合当前契约的 ready 时停在版本不匹配，不自动重试", async (t) => {
+  const { relayHand, relayBrain } = await relayPair(t);
+  let offers = 0;
+  // 旧版 brain 忽略 localSubnets，仍返回不带 probePort 的 ready。
+  relayBrain.port!.handle("direct.offer", async () => {
+    offers++;
+    return { kind: "ready", network: newDirectNetwork([]), brainPort: 1 };
+  });
+  relayBrain.port!.handle("direct.stop", async () => null);
+  let latest: { error?: string; retryAt?: number } = {};
+  handDirect({
+    relay: relayHand, route: new SelectedPort(relayHand.port!), brain: { publicKeyB64: "", key: newDeviceKey() },
+    stateDir: await fixture(t), settings: () => ({ enabled: true, peers: ["tcp://127.0.0.1:1"] }),
+    status: (_transport, error, retryAt) => { latest = { error, retryAt }; }, delays: [50],
+  });
+  await eventually(async () => !!latest.error, "协商结束");
+  await delay(300);
+  assert.match(latest.error!, /update remote-hand on both machines/);
+  assert.equal(latest.retryAt, undefined);
+  assert.equal(offers, 1);
+});
+
 function easyTierStatus(stateDir: string) {
   let latest: EasyTierStatus | undefined;
   const watching = new AbortController();
@@ -224,7 +261,7 @@ test("EasyTier loopback: Noise NK, M0 device auth, bidirectional ACL block and c
     const network = newDirectNetwork([]);
     const signal = new AbortController();
     const instanceInstall = { ...install, signal: AbortSignal.any([install.signal, signal.signal]) };
-    const probePort = await listenProbe(network, instanceInstall.signal);
+    const probePort = await listenProbe(network, instanceInstall.signal, () => signal.abort());
     const run = (role: "hand" | "brain", forwards: Parameters<typeof runEasyTier>[2]) => {
       const [self, other] = role === "hand" ? [handPeer, brainPeer] : [brainPeer, handPeer];
       const config = easyTierConfig({
@@ -317,7 +354,7 @@ test("EasyTier loopback: Noise NK, M0 device auth, bidirectional ACL block and c
   t.diagnostic("清理：两个子进程已退出，实例目录已删除。");
 });
 
-test("直连掉线后按退避自动恢复；对端关闭直连不重试；立即重试跳过等待；撤销清掉重试计时器", { timeout: 240_000 }, async (t) => {
+test("直连掉线后按退避自动恢复；对端关闭直连不重试；立即重试跳过等待；撤销清掉重试计时器", { timeout: 300_000 }, async (t) => {
   const directory = await fixture(t);
   const stateDir = path.join(directory, "easy");
   await ensureEasyTier(stateDir, { archivePath, signal: AbortSignal.timeout(120_000) });
@@ -328,16 +365,8 @@ test("直连掉线后按退避自动恢复；对端关闭直连不重试；立�
   const deviceId = digest(Buffer.from(key.publicKey, "base64url"));
   store.update((state) => { state.devices[deviceId] = { name: "retry hand", lastSeenAt: new Date().toISOString() }; });
 
-  // relay 用内存中的一对 Peer 代替；EasyTier 两端直接互连，不经会合节点和 STUN。
-  const transfer = (other: () => Peer) => async (text: string) => { queueMicrotask(() => other().receive(text)); };
-  const relayHand: Peer = new Peer(transfer(() => relayBrain), () => queueMicrotask(() => relayBrain.close()));
-  const relayBrain: Peer = new Peer(transfer(() => relayHand), () => queueMicrotask(() => relayHand.close()));
-  relayHand.start();
-  relayBrain.start();
-  t.after(() => relayHand.close());
-  await Promise.all([relayHand.ready, relayBrain.ready]);
-  relayHand.activate("hand");
-  relayBrain.activate("brain");
+  // EasyTier 两端直接互连，不经会合节点和 STUN。
+  const { relayHand, relayBrain } = await relayPair(t);
   const [brainListen, handListen] = [await localTcpPort(), await localTcpPort()];
   let brainSettings = { enabled: true, peers: [`tcp://127.0.0.1:${handListen}`] };
   let link: Peer | undefined;
@@ -370,6 +399,19 @@ test("直连掉线后按退避自动恢复；对端关闭直连不重试；立�
   };
 
   await reach("首次建立直连", ({ transport }) => transport === "direct");
+  // 心跳每 10 秒一次；三轮都 busy 时旧实现会判定掉线。
+  const established = latest;
+  const request = Peer.prototype.request;
+  Peer.prototype.request = function (method, ...rest) {
+    return method === "ping" ? Promise.reject(new ProtocolError("busy")) : request.call(this, method, ...rest);
+  };
+  try {
+    await delay(32_000);
+  } finally {
+    Peer.prototype.request = request;
+  }
+  assert.equal(latest, established, "心跳 busy 不计为无响应，直连保持");
+  t.diagnostic("心跳连续三轮 busy：直连保持，未回落 relay。");
   for (const label of ["第 1 次掉线", "第 2 次掉线"]) {
     const wait = await drop(label);
     assert.ok(wait >= 240 && wait <= 360, `${label}从退避起点开始：${wait}ms`);
@@ -378,7 +420,7 @@ test("直连掉线后按退避自动恢复；对端关闭直连不重试；立�
   t.diagnostic("掉线：回落 relay，约 300ms（含抖动）后自动重新协商并恢复直连。");
 
   const flapping = await drop("10 分钟内第 3 次掉线");
-  assert.ok(flapping >= longest * 0.8, `频繁掉线直接用最长间隔：${flapping}ms`);
+  assert.ok(flapping > longest - 100 && flapping <= longest, `频繁掉线直接用最长间隔，不加抖动：${flapping}ms`);
   const asked = Date.now();
   hand.retryNow();
   await reach("立即重试后恢复", ({ transport }) => transport === "direct");
