@@ -1,18 +1,27 @@
 # Remote hand
 
+中文 | [English](README.en.md)
+
 Remote hand 是 Paseo 插件。**hand** 是保存项目的本机，**brain** 是运行 agent 的机器；每台机器可以同时承担两种角色。在 hand 上选择 `remote-hand` 和远端模型，所选 provider 的会话在 brain 运行，项目读写和命令由 hand 的工具执行。
 
-两端通过插件自己的 relay 端点建立 protected Noise 通道。默认使用 `relay.paseo.sh:443`，自建 relay 需提供同样的 v2 协议和有效 TLS。无需启用 Paseo daemon 的 relay，也无需交换 daemon 配对链接。配对码五分钟内有效，只能使用一次；通过私密渠道交给预期设备。 可在两端启用 [EasyTier 直连](docs/direct.md)；配对仍走已配置的 relay。
+两端通过插件自己的 relay 端点建立 protected Noise 通道。默认使用 `relay.paseo.sh:443`，自建 relay 需提供同样的 v2 协议和有效 TLS。无需启用 Paseo daemon 的 relay，也无需交换 daemon 配对链接。配对码五分钟内有效，只能使用一次；通过私密渠道交给预期设备。可在两端启用 [EasyTier 直连](docs/direct.md)，会合节点需[自建](docs/direct.md#自建会合节点)，可用[一键部署脚本](deploy/rendezvous.sh)；配对仍走已配置的 relay。
 
 ## 安装
 
-两端都安装 Paseo 0.16.1 或更新版本，并启用插件。brain 需要能在 Paseo 内运行所选 provider。插件会为自己的会话注入 MCP；无需开启 daemon 的 MCP 注入或 Claude 的 Paseo Tools。在两台机器上分别执行：
+- **图文教程**：[安装教程](docs/install-guide.md)，从准备工作到配对、使用，每一步都有截图。
+- **让 coding agent 代装**：把 [agent 安装手册](docs/install-agent.md) 的链接发给任意 coding agent，并说"看一下这个文档，帮我安装这个插件"：
+
+  ```text
+  看一下 https://github.com/DomenCai/paseo-remote-hand/blob/main/docs/install-agent.md ，然后帮我安装这个插件
+  ```
+
+下面是命令行安装的简要说明。两端都安装 Paseo 0.16.1 或更新版本，并启用插件。brain 需要能在 Paseo 内运行所选 provider。插件会为自己的会话注入 MCP；无需开启 daemon 的 MCP 注入或 Claude 的 Paseo Tools。在两台机器上分别执行：
 
 ```sh
 paseo plugin install git:DomenCai/paseo-remote-hand
 ```
 
-Paseo 会克隆仓库并执行 `npm ci --omit=dev --ignore-scripts`。安装后在 Paseo 设置里打开"远端机器"（hand）或"已连接设备"（brain）页面。用 `paseo plugin ls remote-hand --json` 可找到安装目录的 `path`，`dev/*.mjs` 脚本需在该目录运行。
+Paseo 会克隆仓库并执行 `npm ci --omit=dev --ignore-scripts`。安装后在 Paseo 的插件页点 Remote hand，详情页有「远端机器」（hand）和「已连接设备」（brain）两个标签页。用 `paseo plugin ls remote-hand --json` 可找到安装目录的 `path`，`dev/*.mjs` 脚本需在该目录运行。
 
 开发时也可从本地目录安装：在插件目录执行 `npm ci --omit=dev --ignore-scripts` 后运行 `paseo plugin install "$PWD"`；改动服务端后执行 `paseo plugin reload remote-hand`。
 
