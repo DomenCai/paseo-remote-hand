@@ -339,8 +339,8 @@ test("brain ↔ hand loopback: prompts, hand tools, permissions, stop, reconnect
   t.after(() => client.close());
   const { tools } = await client.listTools();
   assert.deepEqual(tools.map(({ name }) => name).sort(), ["hand_bash", "hand_edit", "hand_glob", "hand_grep", "hand_read", "hand_write"]);
-  assert.match(agent.launch?.appendSystemPrompt?.join(" ") ?? "", /\bhand_read\b/);
-  assert.doesNotMatch(agent.launch?.appendSystemPrompt?.join(" ") ?? "", /mcp__/);
+  assert.match(agent.opts.config.systemPrompt ?? "", /\bhand_read\b/);
+  assert.doesNotMatch(agent.opts.config.systemPrompt ?? "", /mcp__/);
   async function tool(name: string, input: object, signal?: AbortSignal) {
     const result = await client.callTool({ name, arguments: input }, undefined, { signal });
     const [content] = result.content as { type: string; text: string }[];
@@ -511,7 +511,7 @@ test("brain ↔ hand loopback: ACP prefixes only the first prompt and uses authe
     const agent = fake.records.get(reply.agentId)!;
     assert.equal(agent.opts.config.modeId, requested ?? "full-access");
     assert.equal(reply.modeId, agent.opts.config.modeId);
-    assert.match(agent.launch?.appendSystemPrompt?.join(" ") ?? "", /\bhand_read\b/);
+    assert.match(agent.opts.config.systemPrompt ?? "", /\bhand_read\b/);
   }
   access.providers = ["acp-future"];
   await assert.rejects(pair.hand.request("agent.create", create), /not available/);
@@ -528,7 +528,6 @@ test("brain ↔ hand loopback: ACP prefixes only the first prompt and uses authe
   assert.equal(modeId, undefined);
   assert.equal(agent.opts.config.modeId, undefined);
   assert.equal(agent.opts.config.systemPrompt, undefined);
-  assert.equal(agent.launch?.appendSystemPrompt, undefined);
 
   const mcp = agent.launch?.mcpServers["remote-hand"];
   assert.ok(mcp?.type === "stdio");

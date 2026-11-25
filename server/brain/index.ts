@@ -147,9 +147,6 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
       ...request,
       env: { ...request.env, ...lease.env },
       mcpServers: { ...request.mcpServers, [handMcpName]: lease.server },
-      ...(owner.data.delivery !== "stdio-prompt" && {
-        appendSystemPrompt: [...(request.appendSystemPrompt ?? []), toolInstructions],
-      }),
     };
   }
 
@@ -229,7 +226,7 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
           agentId: randomUUID(), title: input.title, metadata: { [ownerKey]: owner },
           config: {
             provider: `${input.provider}/${input.model}`, modeId,
-            ...(!promptPrefix && { systemPrompt: projectContext(input.handCwd, input.handPlatform) }),
+            ...(!promptPrefix && { systemPrompt: `${projectContext(input.handCwd, input.handPlatform)}\n${toolInstructions}` }),
           },
         });
         return { agentId: agent.id, modeId };
