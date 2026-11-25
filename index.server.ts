@@ -1,10 +1,11 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { access, brains, devices, endpoint } from "./shared/settings.ts";
+import { access, brains, devices, direct, endpoint } from "./shared/settings.ts";
 import { BrainService } from "./server/brain.ts";
 import { createBrainAgentService } from "./server/brain/index.ts";
 import { HandService } from "./server/hand.ts";
 import { createLocalDaemon } from "./server/local-daemon.ts";
 import { createHandProvider } from "./server/provider/index.ts";
+import { Snapshots } from "./server/snapshots.ts";
 import { pluginStateDir, resolvePaseoHome, StateStore } from "./server/state.ts";
 
 export default function contribute(server: PluginServerContext) {
@@ -43,6 +44,18 @@ export default function contribute(server: PluginServerContext) {
       if (stopping || visibleModels !== current) return;
       await (await local.api()).providers.refresh({ providers: ["remote-hand"] });
     }).catch(() => { if (!stopping) console.error("Could not refresh the Remote Hand provider catalog."); });
+  });
+
+  const directSnapshots = new Snapshots(() => state.current.direct);
+  server.handle(direct.get, () => state.current.direct);
+  server.handle(direct.watch, (_, context) => directSnapshots.watch(context));
+  server.handle(direct.set, (input) => {
+    if (JSON.stringify(input) === JSON.stringify(state.current.direct)) return null;
+    state.update((current) => { current.direct = input; });
+    brain.directSettingsChanged();
+    hand.directSettingsChanged();
+    directSnapshots.changed();
+    return null;
   });
 
   server.handle(endpoint.get, () => brain.endpoint());

@@ -2,7 +2,7 @@
 
 Remote hand 是 Paseo 插件。**hand** 是保存项目的本机，**brain** 是运行 agent 的机器；每台机器可以同时承担两种角色。在 hand 上选择 `remote-hand` 和远端模型，所选 provider 的会话在 brain 运行，项目读写和命令由 hand 的工具执行。
 
-两端通过插件自己的 relay 端点建立 protected Noise 通道。默认使用 `relay.paseo.sh:443`，自建 relay 需提供同样的 v2 协议和有效 TLS。无需启用 Paseo daemon 的 relay，也无需交换 daemon 配对链接。配对码五分钟内有效，只能使用一次；通过私密渠道交给预期设备。
+两端通过插件自己的 relay 端点建立 protected Noise 通道。默认使用 `relay.paseo.sh:443`，自建 relay 需提供同样的 v2 协议和有效 TLS。无需启用 Paseo daemon 的 relay，也无需交换 daemon 配对链接。配对码五分钟内有效，只能使用一次；通过私密渠道交给预期设备。 可在两端启用 [EasyTier 直连](docs/direct.md)；配对仍走已配置的 relay。
 
 ## 安装
 
@@ -113,7 +113,7 @@ npm run typecheck
 npm test
 ```
 
-M1a 接入可参考[应用协议](docs/protocol.md)。
+M1a 接入可参考[应用协议](docs/protocol.md)。可选直连的底层测试与接入说明见 [EasyTier 直连](docs/direct.md)。
 
 ## 许可证
 

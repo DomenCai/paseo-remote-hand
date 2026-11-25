@@ -2,6 +2,8 @@ import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, ran
 import { importPublicKey } from "@getpaseo/relay/e2ee";
 import { z } from "zod";
 import { RelayAddressSchema } from "../shared/settings.ts";
+import { validate } from "./frames.ts";
+import type { Peer } from "./protocol.ts";
 
 export const INVITE_TTL_MS = 5 * 60_000;
 export const randomToken = () => randomBytes(32).toString("base64url");
@@ -97,4 +99,16 @@ export function verifyDevice(proof: DeviceProof, fingerprint: string, challenge:
   } catch {
     // 对所有非法公钥和签名返回同一个认证结果。
   }
+}
+
+const challengeSchema = z.object({ challenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/) });
+export const DeviceIdSchema = z.object({ deviceId: z.string().regex(/^[0-9a-f]{64}$/) });
+
+export async function requestChallenge(peer: Peer): Promise<string> {
+  return validate(challengeSchema, await peer.request("auth.challenge")).challenge;
+}
+
+export async function resume(peer: Peer, brain: { key: DeviceKey; publicKeyB64: string }): Promise<void> {
+  const proof = signDevice(brain.key, brainFingerprint(brain.publicKeyB64), await requestChallenge(peer));
+  validate(DeviceIdSchema, await peer.request("auth.resume", proof));
 }

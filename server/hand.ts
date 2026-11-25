@@ -4,7 +4,9 @@ import { z } from "zod";
 import {
   BrainPreviewSchema, RelayAddressSchema, RISKS_NOT_ACKNOWLEDGED, type Brain, type BrainPolicy, type BrainPreview,
 } from "../shared/settings.ts";
-import { brainFingerprint, newDeviceKey, parsePairCode, signDevice } from "./identity.ts";
+import { brainFingerprint, DeviceIdSchema, newDeviceKey, parsePairCode, requestChallenge, resume, signDevice } from "./identity.ts";
+import { handDirect } from "./direct/session.ts";
+import { SelectedPort } from "./direct/selected-port.ts";
 import { ProtocolError, validate } from "./frames.ts";
 import type { ConnectionPort, Peer } from "./protocol.ts";
 import { remoteRequest } from "./remote-agent-stream.ts";
@@ -12,20 +14,9 @@ import { connectBrain, reconnectDelay } from "./relay.ts";
 import { Snapshots } from "./snapshots.ts";
 import type { StateStore, StoredBrain } from "./state.ts";
 
-const challengeSchema = z.object({ challenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/) });
 const relayMoveSchema = z.object({ relay: RelayAddressSchema });
-const deviceIdSchema = z.object({ deviceId: z.string().regex(/^[0-9a-f]{64}$/) });
 type View = Pick<Brain, "status" | "transport" | "lastError" | "models">;
-type Slot = { stop: AbortController; view: View; peer?: Peer };
-
-async function challenge(peer: Peer): Promise<string> {
-  return validate(challengeSchema, await peer.request("auth.challenge")).challenge;
-}
-
-async function resume(peer: Peer, brain: StoredBrain): Promise<void> {
-  const proof = signDevice(brain.key, brainFingerprint(brain.publicKeyB64), await challenge(peer));
-  validate(deviceIdSchema, await peer.request("auth.resume", proof));
-}
+type Slot = { stop: AbortController; view: View; peer?: Peer; route?: SelectedPort; refreshDirect?: () => void };
 
 async function maintain(peer: Peer, afterPing: () => void): Promise<ProtocolError> {
   const stop = new AbortController();
@@ -97,12 +88,12 @@ export class HandService {
       if (description.risks.some(({ code }) => !acknowledgedRiskCodes.includes(code)))
         throw new Error(RISKS_NOT_ACKNOWLEDGED);
       const key = newDeviceKey();
-      const proof = signDevice(key, brainId, await challenge(peer), inviteSecret);
+      const proof = signDevice(key, brainId, await requestChallenge(peer), inviteSecret);
       const paired = peer;
       const admitted = peer.request("auth.pair", {
         ...proof, secret: inviteSecret, name: (hostname() || "Remote hand").slice(0, 255), acknowledgedRiskCodes,
       }).then((result) => {
-        validate(deviceIdSchema, result);
+        validate(DeviceIdSchema, result);
         this.#store.update((state) => {
           state.brains[brainId] = { ...target, name, os: description.os, policy: "restricted", projects: [], key, revoked: false };
         });
@@ -136,7 +127,11 @@ export class HandService {
   }
 
   port(brainId: string): ConnectionPort | undefined {
-    return this.#slots.get(brainId)?.peer?.port;
+    return this.#slots.get(brainId)?.route;
+  }
+
+  directSettingsChanged(): void {
+    for (const slot of this.#slots.values()) slot.refreshDirect?.();
   }
 
   readPolicy(brainId: string): { mode: "full" } | { mode: "restricted"; projects: string[] } {
@@ -156,7 +151,7 @@ export class HandService {
   async #loadModels(brainId: string, slot: Slot, port: ConnectionPort): Promise<void> {
     try {
       const catalog = await remoteRequest(port, "agent.catalog", {}, port.signal);
-      if (this.#slots.get(brainId) !== slot || slot.peer?.port !== port || port.signal.aborted) return;
+      if (this.#slots.get(brainId) !== slot || slot.route !== port || port.signal.aborted) return;
       const models = catalog.providers.flatMap((provider) => provider.models.map((model) => ({
         id: `${brainId}/${provider.id}/${model.id}`, label: `${provider.label} · ${model.label}`,
       })));
@@ -260,8 +255,23 @@ export class HandService {
           slot.peer = link;
           link.activate("hand");
           slot.view = { status: "connected", transport: "relay" };
-          this.snapshots.changed();
-          if (link.port) void this.#loadModels(brainId, slot, link.port);
+          if (link.port) {
+            const route = slot.route = new SelectedPort(link.port);
+            // 发布稳定端口，让 provider 先安装 tool.call handler。
+            this.snapshots.changed();
+            slot.refreshDirect = handDirect({
+              relay: link, route, brain, stateDir: this.#store.dir, settings: () => this.#store.current.direct,
+              status: (transport, lastError) => {
+                if (!active() || slot.peer !== link || link.failure) return;
+                if (slot.view.transport === transport && slot.view.lastError === lastError) return;
+                slot.view = { ...slot.view, transport, lastError };
+                this.snapshots.changed();
+              },
+            });
+            void this.#loadModels(brainId, slot, route);
+          } else {
+            this.snapshots.changed();
+          }
         };
         if (paired) {
           peer = paired;
@@ -274,13 +284,15 @@ export class HandService {
           await admitted;
         }
         retries = 0;
-        const port = peer.port;
+        const port = slot.route;
         failure = await maintain(peer, () => { if (port) void this.#loadModels(brainId, slot, port); });
       } catch (error) {
         failure = error instanceof ProtocolError ? error : new ProtocolError("disconnected");
       } finally {
         peer?.close();
         slot.peer = undefined;
+        slot.route = undefined;
+        slot.refreshDirect = undefined;
       }
       if (!active()) return;
       const revoked = failure.code === "revoked";

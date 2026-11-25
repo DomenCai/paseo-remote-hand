@@ -10,7 +10,8 @@
   },
   "scripts": {
     "test": "node --test server/*.test.ts server/hand-tools/*.test.ts server/provider/*.test.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json",
+    "test:direct": "node --test server/direct/*.test.ts"
   },
   "dependencies": {
     "@getpaseo/client": "0.17.3",
@@ -20,6 +21,7 @@
     "picomatch": "^4.0.7",
     "re2js": "^2.10.0",
     "ws": "^8.23.0",
+    "yauzl": "^3.4.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -29,6 +31,7 @@
     "@types/picomatch": "^4.0.3",
     "@types/react": "~19.2.0",
     "@types/ws": "^8.5.0",
+    "@types/yauzl": "^2.10.3",
     "react": "19.1.0",
     "react-native": "0.81.5",
     "typescript": "^5.9.3"
