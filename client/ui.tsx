@@ -143,20 +143,27 @@ export function TransportBadge({
 
 export function DirectFallbackNotice({
   title,
+  detail,
   reason,
   expandLabel,
   collapseLabel,
   theme,
+  action,
+  defaultExpanded = false,
   compact = false,
 }: {
   title: string;
+  // 接在标题后的重试状态，例如倒计时。
+  detail?: string;
   reason: string;
   expandLabel: string;
   collapseLabel: string;
   theme: PluginTheme;
+  action?: ReactNode;
+  defaultExpanded?: boolean;
   compact?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultExpanded);
 
   return (
     <View
@@ -177,24 +184,27 @@ export function DirectFallbackNotice({
               { color: compact ? theme.colors.foregroundMuted : theme.colors.foreground },
             ]}
           >
-            {title}
+            {detail ? `${title} · ${detail}` : title}
           </Text>
         </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityState={{ expanded }}
-          onPress={() => setExpanded((current) => !current)}
-          style={({ pressed }) => [styles.fallbackToggle, { opacity: pressed ? 0.7 : 1 }]}
-        >
-          <Text style={[styles.fallbackToggleText, { color: theme.colors.foregroundMuted }]}>
-            {expanded ? collapseLabel : expandLabel}
-          </Text>
-          <Icon
-            name={expanded ? "ChevronUp" : "ChevronDown"}
-            size={14}
-            color={theme.colors.foregroundMuted}
-          />
-        </Pressable>
+        <View style={styles.fallbackActions}>
+          {action}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded }}
+            onPress={() => setExpanded((current) => !current)}
+            style={({ pressed }) => [styles.fallbackToggle, { opacity: pressed ? 0.7 : 1 }]}
+          >
+            <Text style={[styles.fallbackToggleText, { color: theme.colors.foregroundMuted }]}>
+              {expanded ? collapseLabel : expandLabel}
+            </Text>
+            <Icon
+              name={expanded ? "ChevronUp" : "ChevronDown"}
+              size={14}
+              color={theme.colors.foregroundMuted}
+            />
+          </Pressable>
+        </View>
       </View>
       {expanded ? (
         <Text
@@ -444,6 +454,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
     flexShrink: 1,
+  },
+  fallbackActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
   },
   fallbackToggle: {
     flexDirection: "row",

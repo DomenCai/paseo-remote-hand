@@ -43,6 +43,70 @@ export function isDirectFallback(brain: Brain): boolean {
   return brain.status === "connected" && brain.transport === "relay" && Boolean(brain.lastError);
 }
 
+// 直连回落提示：按 directRetryAt 在本地倒计时，到点或点击后由服务端重新协商；没有重试时间即永久性失败。
+export function DirectFallback({
+  brain,
+  theme,
+  compact = false,
+}: {
+  brain: Brain;
+  theme: PluginTheme;
+  compact?: boolean;
+}) {
+  const { t } = useTranslation(messages);
+  const toast = useToast();
+  const retryDirect = useRpc(brains.retryDirect);
+  const retryAt = brain.directRetryAt;
+  const [now, setNow] = useState(Date.now);
+
+  useEffect(() => {
+    if (retryAt === undefined) return;
+    setNow(Date.now());
+    const timer = setInterval(() => {
+      setNow(Date.now());
+      if (Date.now() >= retryAt) clearInterval(timer);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [retryAt]);
+
+  const seconds = retryAt === undefined ? undefined : Math.ceil((retryAt - now) / 1000);
+  const handleRetry = useCallback(() => {
+    retryDirect({ brainId: brain.brainId }).catch((err: unknown) =>
+      toast.show(errorMessage(err), { variant: "error" }),
+    );
+  }, [brain.brainId, retryDirect, toast]);
+
+  return (
+    <DirectFallbackNotice
+      title={t("remoteMachines.directFallbackTitle")}
+      detail={
+        seconds === undefined
+          ? t("remoteMachines.directNoRetry")
+          : seconds > 0
+            ? t("remoteMachines.directRetryIn", { seconds })
+            : t("remoteMachines.directRetrying")
+      }
+      reason={brain.lastError ?? ""}
+      expandLabel={t("remoteMachines.directFallbackShowReason")}
+      collapseLabel={t("remoteMachines.directFallbackHideReason")}
+      defaultExpanded={seconds === undefined}
+      action={
+        seconds !== undefined && seconds > 0 ? (
+          <ActionButton
+            label={t("remoteMachines.directRetryNow")}
+            icon="RefreshCw"
+            theme={theme}
+            compact
+            onPress={handleRetry}
+          />
+        ) : null
+      }
+      theme={theme}
+      compact={compact}
+    />
+  );
+}
+
 export function brainStatusTone(status: BrainStatus): StatusTone {
   switch (status) {
     case "connected":
@@ -287,15 +351,7 @@ export function BrainDetailView({
         />
       </View>
 
-      {directFallback && brain.lastError ? (
-        <DirectFallbackNotice
-          title={t("remoteMachines.directFallbackTitle")}
-          reason={brain.lastError}
-          expandLabel={t("remoteMachines.directFallbackShowReason")}
-          collapseLabel={t("remoteMachines.directFallbackHideReason")}
-          theme={theme}
-        />
-      ) : null}
+      {directFallback ? <DirectFallback brain={brain} theme={theme} /> : null}
 
       {showRelayHint ? (
         <NoticeBox

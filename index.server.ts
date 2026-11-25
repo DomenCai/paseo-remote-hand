@@ -75,6 +75,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(brains.remove, ({ brainId }) => hand.remove(brainId));
   server.handle(brains.setRelay, ({ brainId, relay }) => { hand.setRelay(brainId, relay); return null; });
   server.handle(brains.setPolicy, ({ brainId, policy }) => { hand.setPolicy(brainId, policy); return null; });
+  server.handle(brains.retryDirect, ({ brainId }) => { hand.retryDirect(brainId); return null; });
   server.handle(brains.revokeProject, ({ brainId, root }) => { hand.revokeProject(brainId, root); return null; });
   server.handle(brains.watch, (_, context) => hand.snapshots.watch(context));
 

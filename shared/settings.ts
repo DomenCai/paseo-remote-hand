@@ -58,6 +58,9 @@ export const BrainSchema = z.object({
   policy: BrainPolicySchema,
   projects: z.array(z.object({ root: nonEmptyString, grantedAt: timestamp })),
   lastError: z.string().optional(),
+  // 直连回落 relay 后下次自动重试的时间（Unix 毫秒），已到时表示正在重试；省略且有 lastError 表示不会自动重试，
+  // 原因见 lastError，等任一端改直连设置再试。
+  directRetryAt: z.int().nonnegative().optional(),
   // 取自 brain；id 形如 <brainId>/<provider>/<model>。
   models: z.array(z.object({ id: nonEmptyString, label: nonEmptyString })).optional(),
 });
@@ -154,6 +157,12 @@ export const brains = {
   setRelay: defineRpc({
     name: "brains.set-relay",
     input: brainIdentity.extend({ relay: RelayAddressSchema }),
+    output: noOutput,
+  }),
+  // 跳过直连退避等待，立即重新协商；没有在等待的自动重试时不做任何事。
+  retryDirect: defineRpc({
+    name: "brains.retry-direct",
+    input: brainIdentity,
     output: noOutput,
   }),
   revokeProject: defineRpc({

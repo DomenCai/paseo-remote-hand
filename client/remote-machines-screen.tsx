@@ -8,7 +8,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { brains, type Brain } from "../shared/settings";
 import { AddBrainModal } from "./add-brain-modal";
-import { BrainDetailView, brainStatusTone, isDirectFallback } from "./brain-detail";
+import { BrainDetailView, brainStatusTone, DirectFallback, isDirectFallback } from "./brain-detail";
 import { DirectAccelerationSection } from "./direct-acceleration-section";
 import {
   brainStatusKey,
@@ -19,7 +19,6 @@ import {
 } from "./messages";
 import {
   ActionButton,
-  DirectFallbackNotice,
   EmptyStateCard,
   NoticeBox,
   StatusBadge,
@@ -200,7 +199,7 @@ export function RemoteMachinesScreen({ theme, layout }: PluginSurfaceProps) {
                     </View>
                     <Icon name="ChevronRight" size={16} color={theme.colors.foregroundMuted} />
                   </Pressable>
-                  {directFallback && brain.lastError ? (
+                  {directFallback ? (
                     <View
                       style={[
                         styles.fallbackWrap,
@@ -210,14 +209,7 @@ export function RemoteMachinesScreen({ theme, layout }: PluginSurfaceProps) {
                         },
                       ]}
                     >
-                      <DirectFallbackNotice
-                        title={t("remoteMachines.directFallbackTitle")}
-                        reason={brain.lastError}
-                        expandLabel={t("remoteMachines.directFallbackShowReason")}
-                        collapseLabel={t("remoteMachines.directFallbackHideReason")}
-                        theme={theme}
-                        compact
-                      />
+                      <DirectFallback brain={brain} theme={theme} compact />
                     </View>
                   ) : null}
                 </View>
