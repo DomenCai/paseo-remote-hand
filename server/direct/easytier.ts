@@ -28,7 +28,7 @@ type Config = {
   // 空数组关闭 STUN，供纯 loopback 验证或显式部署设置使用。
   stunServers?: readonly string[];
 };
-type Install = { stateDir: string; signal: AbortSignal; archivePath?: string };
+type Install = { stateDir: string; signal: AbortSignal; setupSignal?: AbortSignal; archivePath?: string };
 
 function port(value: number) {
   return z.number().int().min(1).max(65535).parse(value);
@@ -115,12 +115,13 @@ export async function localTcpPort(): Promise<number> {
 // 低层进程入口也从已校验的缓存启动；测试用同一路径加载两端的隔离配置。
 export async function runEasyTier(install: Install, config: string, forwards: readonly number[]) {
   const { stateDir, signal } = install;
-  const binary = await ensureEasyTier(stateDir, install);
+  const setup = install.setupSignal ?? signal;
+  const binary = await ensureEasyTier(stateDir, { ...install, signal: setup });
   const parent = path.join(stateDir, "easytier");
   await mkdir(parent, { recursive: true, mode: 0o700 });
   const instanceDir = await mkdtemp(path.join(parent, "instance-"));
   const file = path.join(instanceDir, "config.toml");
-  const startup = AbortSignal.any([signal, AbortSignal.timeout(8_000)]);
+  const startup = AbortSignal.any([setup, signal, AbortSignal.timeout(8_000)]);
   try {
     await writeFile(file, config, { mode: 0o600, flag: "wx", signal: startup });
     const rpcPort = await localTcpPort();

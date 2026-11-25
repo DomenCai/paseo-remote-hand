@@ -6,6 +6,8 @@ import { BrainOsSchema, type Access, type BrainPreview, type Device, type Endpoi
 import {
   brainFingerprint, DeviceProofSchema, digest, encodePairCode, INVITE_TTL_MS, randomToken, verifyDevice,
 } from "./identity.ts";
+import { brainDirect, directReadyMethod } from "./direct/session.ts";
+import { SelectedPort } from "./direct/selected-port.ts";
 import { ProtocolError, validate } from "./frames.ts";
 import type { ConnectionPort, Peer } from "./protocol.ts";
 import { startRelay } from "./relay.ts";
@@ -57,6 +59,7 @@ export class BrainService {
   #status: Endpoint["status"] = "disconnected";
   #lastError?: string;
   #changingRelay = false;
+  #direct = new Map<Peer, { route: SelectedPort; refresh: () => void; error?: string }>();
   #peers = new Map<string, Set<Peer>>();
   readonly snapshots = new Snapshots(() => this.devices());
   readonly endpointSnapshots = new Snapshots(() => this.endpoint());
@@ -90,9 +93,10 @@ export class BrainService {
 
   endpoint(): Endpoint {
     const { relay, serverId, publicKeyB64 } = this.#store.current.endpoint;
+    const lastError = this.#lastError ?? [...this.#direct.values()].find((link) => link.error)?.error;
     return {
       relay, serverId, fingerprint: brainFingerprint(publicKeyB64), status: this.#status,
-      ...(this.#lastError === undefined ? {} : { lastError: this.#lastError }),
+      ...(lastError === undefined ? {} : { lastError }),
       risks: description(relay).risks,
     };
   }
@@ -115,9 +119,14 @@ export class BrainService {
     }
   }
 
+  directSettingsChanged(): void {
+    for (const link of this.#direct.values()) link.refresh();
+  }
+
   port(deviceId: string): ConnectionPort | undefined {
-    for (const peer of this.#peers.get(deviceId) ?? []) {
-      if (peer.port) return peer.port;
+    const peers = [...this.#peers.get(deviceId) ?? []].reverse();
+    for (const peer of peers) {
+      if (peer.port) return this.#direct.get(peer)?.route ?? peer.port;
     }
   }
 
@@ -157,18 +166,31 @@ export class BrainService {
     this.#store.update((state) => { state.access = access; });
   }
 
-  accept(peer: Peer): void {
+  accept(peer: Peer, direct?: {
+    deviceId: string;
+    signal: AbortSignal;
+    ready: (peer: Peer) => () => void;
+  }): void {
     let deviceId: string | undefined;
     let challenge: { nonce: string; expires: number } | undefined;
     let attempted = false;
+    let directReady = false;
     const expiry = setTimeout(() => peer.close(new ProtocolError("timeout")), ENROLLMENT_SESSION_MS);
     const fingerprint = brainFingerprint(this.#store.current.endpoint.publicKeyB64);
 
-    peer.serve((method, payload) => {
-      if (deviceId && !this.#peers.get(deviceId)?.has(peer)) throw new ProtocolError("revoked");
-      if (method === "describe") return description(this.#store.current.endpoint.relay);
+    peer.serve((method, payload, afterReply) => {
+      if (direct?.signal.aborted) throw new ProtocolError("disconnected");
+      if (deviceId && (!Object.hasOwn(this.#store.current.devices, deviceId) ||
+          (!direct && !this.#peers.get(deviceId)?.has(peer)))) throw new ProtocolError("revoked");
+      if (method === "describe" && !direct) return description(this.#store.current.endpoint.relay);
       if (method === "ping" && deviceId) return null;
-      if (method === "self.revoke" && deviceId) {
+      if (method === directReadyMethod && direct && deviceId && !directReady) {
+        const promote = direct.ready(peer);
+        directReady = true;
+        afterReply(promote);
+        return null;
+      }
+      if (method === "self.revoke" && deviceId && !direct) {
         this.revoke(deviceId); // revoked 通知也是对自撤销的确认。
         return null;
       }
@@ -178,12 +200,20 @@ export class BrainService {
       }
       if (!deviceId && !attempted && (method === "auth.pair" || method === "auth.resume")) {
         if (this.#changingRelay) throw new ProtocolError("busy");
+        if (direct && method !== "auth.resume") throw new ProtocolError("invalid");
         attempted = true;
         if (!challenge || this.#now() >= challenge.expires) throw new ProtocolError("identity");
         const pair = method === "auth.pair" ? validate(PairSchema, payload) : undefined;
         const proof = pair ?? validate(DeviceProofSchema, payload);
         const id = verifyDevice(proof, fingerprint, challenge.nonce, pair?.secret);
-        if (!id) throw new ProtocolError("identity");
+        if (!id || (direct && id !== direct.deviceId)) throw new ProtocolError("identity");
+        if (direct) {
+          if (!Object.hasOwn(this.#store.current.devices, id)) throw new ProtocolError("revoked");
+          clearTimeout(expiry);
+          deviceId = id;
+          peer.activate("brain");
+          return { deviceId: id };
+        }
 
         const lastSeenAt = new Date(this.#now()).toISOString();
         if (pair) {
@@ -207,7 +237,23 @@ export class BrainService {
         if (!peers) this.#peers.set(id, peers = new Set());
         peers.add(peer);
         peer.activate("brain");
-        if (peer.port) this.#attach?.(id, peer.port);
+        if (peer.port) {
+          const route = new SelectedPort(peer.port);
+          const target = this.#store.current.endpoint;
+          const link: { route: SelectedPort; refresh: () => void; error?: string } = {
+            route, refresh: brainDirect({
+              relay: peer, route, settings: () => this.#store.current.direct, stateDir: this.#store.dir,
+              keys: { publicKey: importPublicKey(target.publicKeyB64), secretKey: importSecretKey(target.secretKeyB64) },
+              accept: (candidate, signal, ready) => this.accept(candidate, { deviceId: id, signal, ready }),
+              status: (error) => {
+                link.error = error;
+                this.endpointSnapshots.changed();
+              },
+            }),
+          };
+          this.#direct.set(peer, link);
+          this.#attach?.(id, route);
+        }
         this.snapshots.changed();
         return { deviceId: id };
       }
@@ -216,7 +262,8 @@ export class BrainService {
 
     void peer.closed.then(() => {
       clearTimeout(expiry);
-      if (!deviceId) return;
+      if (direct || !deviceId) return;
+      if (this.#direct.delete(peer)) this.endpointSnapshots.changed();
       const peers = this.#peers.get(deviceId);
       if (!peers?.delete(peer) || peers.size > 0) return;
       this.#peers.delete(deviceId);

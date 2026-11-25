@@ -33,7 +33,11 @@ async function streamZip(target: string, asset: Artifact, source: string | undef
   if (source) {
     stream = createReadStream(source, { signal });
   } else {
-    const response = await fetch(asset.url, { signal });
+    const response = await fetch(asset.url, { signal }).catch((error: unknown) => {
+      if ((signal.reason as Error | undefined)?.name === "TimeoutError") throw new Error("EasyTier official download timed out.");
+      signal.throwIfAborted();
+      throw new Error("EasyTier official download failed.", { cause: error });
+    });
     if (!response.ok || !response.body) throw new Error(`EasyTier official download failed (HTTP ${response.status}).`);
     stream = Readable.fromWeb(response.body as unknown as import("node:stream/web").ReadableStream<Uint8Array>);
   }
@@ -46,7 +50,13 @@ async function streamZip(target: string, asset: Artifact, source: string | undef
     hash.update(chunk);
     callback(null, chunk);
   } });
-  await pipeline(stream, meter, createWriteStream(target, { flags: "wx", mode: 0o600 }), { signal });
+  try {
+    await pipeline(stream, meter, createWriteStream(target, { flags: "wx", mode: 0o600 }), { signal });
+  } catch (error) {
+    if (!source && (signal.reason as Error | undefined)?.name === "TimeoutError")
+      throw new Error("EasyTier official download timed out.");
+    throw error;
+  }
   if (hash.digest("hex") !== asset.sha256) throw new Error("EasyTier archive SHA-256 verification failed.");
 }
 

@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { exportPublicKey, exportSecretKey, generateKeyPair } from "@getpaseo/relay/e2ee";
 import { z } from "zod";
-import { AccessSchema, BrainOsSchema, BrainPolicySchema, BrainSchema, DEFAULT_RELAY, RelayAddressSchema } from "../shared/settings.ts";
+import { AccessSchema, BrainOsSchema, BrainPolicySchema, BrainSchema, DEFAULT_DIRECT, DEFAULT_RELAY, DirectSettingsSchema, RelayAddressSchema } from "../shared/settings.ts";
 import { DeviceKeySchema } from "./identity.ts";
 
 const StateSchema = z.object({
@@ -18,6 +18,7 @@ const StateSchema = z.object({
   devices: z.record(z.string(), z.object({ name: z.string(), lastSeenAt: z.iso.datetime() })),
   invites: z.record(z.string(), z.object({ label: z.string().optional(), expiresAt: z.iso.datetime() })),
   access: AccessSchema,
+  direct: DirectSettingsSchema.default(DEFAULT_DIRECT),
   brains: z.record(z.string(), z.object({
     relay: RelayAddressSchema,
     serverId: z.uuid(),
@@ -47,8 +48,10 @@ export function pluginStateDir(paseoHome = resolvePaseoHome()): string {
 export class StateStore {
   #state: State;
   readonly #file: string;
+  readonly dir: string;
 
   constructor(dir: string) {
+    this.dir = dir;
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     this.#file = join(dir, "state.json");
     if (process.platform !== "win32") chmodSync(dir, 0o700);
@@ -67,7 +70,7 @@ export class StateStore {
           relay: DEFAULT_RELAY, serverId: randomUUID(),
           publicKeyB64: exportPublicKey(keys.publicKey), secretKeyB64: exportSecretKey(keys.secretKey),
         },
-        devices: {}, invites: {}, brains: {},
+        devices: {}, invites: {}, brains: {}, direct: structuredClone(DEFAULT_DIRECT),
         access: { providers: [], maxConcurrentPerDevice: 1 },
       };
       this.#save(this.#state);

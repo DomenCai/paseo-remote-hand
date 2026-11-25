@@ -6,6 +6,7 @@ import {
   remoteAgentStreams, remoteToolEvents,
   type RemoteAgentCursor, type RemoteAgentEvent, type RemoteAgentJson, type RemoteAgentPlatform, type RemoteAgentPort,
 } from "../../shared/remote-agent.ts";
+import { DirectLinkLost } from "../direct/selected-port.ts";
 import { executeHandTool } from "../hand-tools/index.ts";
 import { absolutePath } from "../hand-tools/paths.ts";
 import { errorMessage, RemoteEventQueue, remoteRequest, toRemoteJson } from "../remote-agent-stream.ts";
@@ -214,6 +215,13 @@ export function createHandProvider(directory: HandBrainDirectory) {
       } catch (error) {
         if (signal.aborted || session.source !== source) return;
         source.ready = false;
+        if (error instanceof DirectLinkLost) {
+          // 断开的事件流无法保留，从最后的游标新订阅；不重发 prompt 或工具。
+          session.source = undefined;
+          source.lifetime.abort();
+          drive(session);
+          return;
+        }
         if (session.opened) {
           session.emit({ type: "request.failed", requestId: session.opened, error: { message: errorMessage(error) } });
           closeSession(session);

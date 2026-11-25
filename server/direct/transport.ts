@@ -1,8 +1,7 @@
 import { createServer } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { WebSocket, WebSocketServer } from "ws";
-import { resume } from "../hand.ts";
-import type { DeviceKey } from "../identity.ts";
+import { resume, type DeviceKey } from "../identity.ts";
 import type { Peer } from "../protocol.ts";
 import { MAX_WIRE_BYTES, protectedPeer } from "../relay.ts";
 
@@ -72,6 +71,7 @@ export async function connectDirect(
   try {
     await resume(peer, brain);
     signal.throwIfAborted();
+    peer.activate("hand");
     return peer;
   } catch (error) {
     peer.close();

@@ -218,6 +218,7 @@ test("EasyTier loopback: Noise NK, M0 device auth, bidirectional ACL block and c
     }
   }, "protected EasyTier transport and device authentication");
   t.after(() => activePeer.close());
+  assert.ok(activePeer.port, "auth.resume activates hand application frames on direct");
   const preview = await activePeer.request("describe") as { brainName?: string };
   assert.ok(preview.brainName);
   assert.equal(await activePeer.request("ping", "x".repeat(96 * 1024)), null);

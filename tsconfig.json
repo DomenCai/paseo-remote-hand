@@ -12,6 +12,7 @@
   "files": [
     "index.server.ts",
     "server/direct/direct.test.ts",
+    "server/direct-routing.test.ts",
     "server/identity.test.ts",
     "server/protocol.test.ts"
   ]

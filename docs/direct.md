@@ -1,6 +1,17 @@
-# EasyTier 直连底层
+# EasyTier 直连
 
-这组模块可独立运行，插件入口仍使用 M0 relay。没有配置会合 peers 时，默认不尝试下载或启动 EasyTier。
+配对、设备认证和链路协商都从 Paseo relay 开始。两端都启用直连并配置至少一个会合 peer 时，插件才下载和启动 EasyTier。直连再次验证 brain 公钥和 hand 设备身份。验证完成后，新请求和流优先使用直连；已有操作留在原链路。直连断开后新操作回落到 relay。关闭直连、设备撤销或认证 relay 断开时，结束本代的直连和 EasyTier 实例。
+
+在两台机器各自的插件目录运行：
+
+```sh
+node dev/rpc.mjs direct.get
+node dev/rpc.mjs direct.set '{"enabled":true,"peers":["udp://meet.example.com:11010","tcp://meet.example.com:11010"]}'
+node dev/watch.mjs direct.watch
+node dev/watch.mjs brains.watch
+```
+
+`direct` 是机器级设置，同时用于本机的 hand 和 brain。默认是 `{"enabled":false,"peers":[]}`。可将 `enabled` 设为 `false` 暂时回到 relay，保留 peers 供下次使用。hand 的 `brains.watch` 显示当前首选链路；brain 的 `endpoint.watch` 可看到本地 EasyTier 启动错误。下载、校验或建链失败时 relay 仍可用，hand 的 `lastError` 显示失败原因。更新任一端直连设置，或重新认证 relay，即可再发起协商。
 
 `server/direct/easytier-release.ts` 记录 [EasyTier v2.6.4 官方附件](https://github.com/EasyTier/EasyTier/releases/tag/v2.6.4)的完整 URL、ZIP 和所需成员的 SHA-256。安装缓存位于插件状态目录的 `easytier/v2.6.4/<平台>-<架构>`，支持 macOS arm64/x64、Linux x64/arm64 和 Windows x64。只解压固定成员，每次启动前复核缓存。EasyTier 按 LGPL v3 作为独立子进程运行，插件不打包它的二进制。上游[源码](https://github.com/EasyTier/EasyTier/tree/v2.6.4)和[许可证](https://github.com/EasyTier/EasyTier/blob/v2.6.4/LICENSE)对应同一标签。
 
@@ -17,13 +28,12 @@ npm run test:direct
 
 `npm run test:direct` 会获取本平台的官方 ZIP。已有 ZIP 时可用 `EASYTIER_TEST_ZIP=/absolute/path/to/release.zip npm run test:direct`，两种方式都校验摘要。测试不使用公网 peers 或 STUN。它启动本机双实例，先验证四个仿真服务在正对照中均能收到并回包，然后开启 ACL 验证两方向的 TCP、UDP 探针均到不了目标服务。同一测试覆盖允许入口的 M0 认证、96 KiB payload、错误密钥、未知和撤销设备、进程退出清理。
 
-## 生命周期和接入
+## 生命周期
 
-1. 在已认证的 relay 连接上发起协商。brain 用 `newDirectNetwork()` 为本代创建网络名和密钥，只经此 relay 通道传给 hand；双方各自读取已配置的会合 URL。不要记录网络名和密钥。
-2. Brain 用 `listenDirect(keys, accept, signal)` 获得回环入口端口；`accept` 复用实际 M0 handler，并在正式接入时要求直连认证的设备 ID 与发起协商的 relay 连接相同。
-3. 两端调用 `startEasyTier({ role, network, brainPort, peers, stateDir, signal })`。默认不配置物理入站 listener；测试才显式监听 loopback peers。进程启动检查只代表本地 ACL、代理和所需转发已初始化。Hand 使用返回的 `forwardPort` 调用 `connectDirect`，等 Noise NK 和设备认证成功后才标记直连可用。
-4. 只为新请求和新流选择已经认证的直连 `Peer`。已有请求和流留在原通道，直连断开后只把新流量发往 relay。撤销由同一设备授权表处理，同时取消该代协商、监听器、连接和 EasyTier 实例。用实例的 `signal` 或 `closed` 观察意外退出。
-5. 配置文件只在子进程启动期限内存在。POSIX 上实例目录为 `0700`，配置文件为 `0600`；网络秘密不在命令行、插件日志或持久设置中。正常关闭及启动失败会回收进程和文件；宿主被强杀时，操作系统不保证运行清理回调。
+1. hand 从已认证的 relay 发送 `direct.offer`。brain 为该代生成临时网络名和密钥，通过该加密连接返回。两端各自采用本机配置的会合 URL。
+2. brain 的回环入口只接收和 relay 相同的设备身份。hand 在 EasyTier 转发上完成 Noise NK 和设备认证，安装入站 handler 后发送 `direct.ready`。brain 安装 handler 并发出确认，两端才启用直连出站。
+3. 应用端口和授权仍跟随原 relay 的生命周期。链路切换不会替换端口或移动在途操作。断掉的时间线流可以从已接收的游标续订；业务请求和工具不自动重发。工具的新建流在插件日志记录 `Remote hand tool.call transport=direct` 或 `transport=relay`，日志不包含调用参数。
+4. POSIX 上实例目录为 `0700`，启动配置文件为 `0600`。网络秘密不在命令行、插件日志或持久设置中。正常关闭及启动失败会回收进程和文件；宿主被强杀时，操作系统不保证运行清理回调。
 
 实例只启用 no-tun 和指定端口的固定转发。Hand 拒绝所有新入站；brain 只接收对端虚拟 IP 发往直连入口的 TCP。两端都拒绝转发其他入站流量。管理 RPC 服务在 v2.6.4 总会创建，因此显式绑定回环，并使用不匹配回环客户端地址的白名单。见 [no-tun 入口取舍与源码](../.agents/notes/2026-11-24-easytier-no-tun-boundary.md)。
 

@@ -86,6 +86,29 @@ export const AccessSchema = z.object({
   maxConcurrentPerDevice: z.int().positive(),
 });
 
+export const DirectPeerSchema = z.string().trim().max(300).transform((value, ctx) => {
+  const match = /^(tcp|udp):\/\/(.+)\/?$/.exec(value);
+  const address = match && RelayAddressSchema.safeParse(match[2].replace(/\/$/, ""));
+  if (match && address && address.success) return `${match[1]}://${address.data}`;
+  ctx.addIssue({ code: "custom", message: "Expected tcp://host:port or udp://host:port." });
+  return z.NEVER;
+});
+
+export const DirectSettingsSchema = z.object({
+  enabled: z.boolean(),
+  peers: z.array(DirectPeerSchema).max(16).transform((peers) => [...new Set(peers)]),
+});
+
+export type DirectSettings = z.infer<typeof DirectSettingsSchema>;
+export const DEFAULT_DIRECT: DirectSettings = { enabled: false, peers: [] };
+
+// 每台机器的一份配置，同时用于 hand 和 brain。两端都启用并配置会合地址才尝试直连。
+export const direct = {
+  get: defineRpc({ name: "direct.get", input: emptyInput, output: DirectSettingsSchema }),
+  set: defineRpc({ name: "direct.set", input: DirectSettingsSchema, output: noOutput }),
+  watch: defineSubscription({ name: "direct.watch", input: emptyInput, event: DirectSettingsSchema }),
+};
+
 export type BrainOs = z.infer<typeof BrainOsSchema>;
 export type BrainPolicy = z.infer<typeof BrainPolicySchema>;
 export type BrainStatus = z.infer<typeof BrainStatusSchema>;
