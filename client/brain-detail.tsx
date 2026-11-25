@@ -31,11 +31,17 @@ import {
 import {
   ActionButton,
   ConfirmModal,
+  DirectFallbackNotice,
   NoticeBox,
   StatusBadge,
+  TransportBadge,
   type PluginTheme,
   type StatusTone,
 } from "./ui";
+
+export function isDirectFallback(brain: Brain): boolean {
+  return brain.status === "connected" && brain.transport === "relay" && Boolean(brain.lastError);
+}
 
 export function brainStatusTone(status: BrainStatus): StatusTone {
   switch (status) {
@@ -246,14 +252,9 @@ export function BrainDetailView({
     }
   }, [brain.brainId, onBack, removeBrain, t, toast]);
 
-  const transportText =
-    brain.transport === "direct"
-      ? t("transport.direct")
-      : brain.transport === "relay"
-        ? t("transport.relay")
-        : "—";
-
-  const showRelayHint = Boolean(brain.lastError) || brain.status === "disconnected";
+  const directFallback = isDirectFallback(brain);
+  const showRelayHint =
+    (!directFallback && Boolean(brain.lastError)) || brain.status === "disconnected";
   const relayHasChanges = relayDraft.trim() !== brain.relay;
 
   const models = brain.models ?? [];
@@ -285,6 +286,16 @@ export function BrainDetailView({
           theme={theme}
         />
       </View>
+
+      {directFallback && brain.lastError ? (
+        <DirectFallbackNotice
+          title={t("remoteMachines.directFallbackTitle")}
+          reason={brain.lastError}
+          expandLabel={t("remoteMachines.directFallbackShowReason")}
+          collapseLabel={t("remoteMachines.directFallbackHideReason")}
+          theme={theme}
+        />
+      ) : null}
 
       {showRelayHint ? (
         <NoticeBox
@@ -326,9 +337,19 @@ export function BrainDetailView({
             </Text>
           </SettingsRow>
           <SettingsRow label={t("remoteMachines.transportLabel")}>
-            <Text style={[styles.valueText, { color: theme.colors.foreground }]}>
-              {transportText}
-            </Text>
+            {brain.transport ? (
+              <TransportBadge
+                transport={brain.transport}
+                label={
+                  brain.transport === "direct"
+                    ? t("transport.direct")
+                    : t("transport.relay")
+                }
+                theme={theme}
+              />
+            ) : (
+              <Text style={[styles.valueText, { color: theme.colors.foregroundMuted }]}>—</Text>
+            )}
           </SettingsRow>
           <SettingsInput
             ref={relayInputRef}

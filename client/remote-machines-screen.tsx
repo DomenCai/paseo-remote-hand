@@ -8,7 +8,8 @@ import { useCallback, useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { brains, type Brain } from "../shared/settings";
 import { AddBrainModal } from "./add-brain-modal";
-import { BrainDetailView, brainStatusTone } from "./brain-detail";
+import { BrainDetailView, brainStatusTone, isDirectFallback } from "./brain-detail";
+import { DirectAccelerationSection } from "./direct-acceleration-section";
 import {
   brainStatusKey,
   messages,
@@ -16,7 +17,14 @@ import {
   osLabelKey,
   policyShortKey,
 } from "./messages";
-import { ActionButton, EmptyStateCard, NoticeBox, StatusBadge } from "./ui";
+import {
+  ActionButton,
+  DirectFallbackNotice,
+  EmptyStateCard,
+  NoticeBox,
+  StatusBadge,
+  TransportBadge,
+} from "./ui";
 
 const EMPTY_INPUT = {};
 
@@ -119,74 +127,107 @@ export function RemoteMachinesScreen({ theme, layout }: PluginSurfaceProps) {
         ) : (
           <SettingsCard>
             {items.map((brain) => {
-              const metaParts = [
-                t(osLabelKey(brain.os)),
-                brain.transport === "direct"
-                  ? t("transport.direct")
-                  : brain.transport === "relay"
-                    ? t("transport.relay")
-                    : null,
-                t(policyShortKey(brain.policy)),
-              ].filter((part): part is string => part !== null);
+              const directFallback = isDirectFallback(brain);
+              const metaText = [t(osLabelKey(brain.os)), t(policyShortKey(brain.policy))].join(
+                " · ",
+              );
+              const padH = layout.compact ? 14 : 16;
 
               return (
-                <Pressable
-                  key={brain.brainId}
-                  accessibilityRole="button"
-                  accessibilityLabel={brain.name}
-                  onPress={() => setSelectedBrainId(brain.brainId)}
-                  style={({ pressed }) => [
-                    styles.row,
-                    {
-                      paddingVertical: layout.compact ? 12 : 14,
-                      paddingHorizontal: layout.compact ? 14 : 16,
-                      opacity: pressed ? 0.75 : 1,
-                    },
-                  ]}
-                >
-                  <View style={styles.rowLeading}>
-                    <Icon
-                      name={osIconName(brain.os)}
-                      size={18}
-                      color={theme.colors.foregroundMuted}
-                    />
-                  </View>
-                  <View style={styles.rowMain}>
-                    <View style={styles.rowTop}>
-                      <Text
-                        numberOfLines={1}
-                        style={[styles.rowTitle, { color: theme.colors.foreground }]}
-                      >
-                        {brain.name}
-                      </Text>
-                      <StatusBadge
-                        label={t(brainStatusKey(brain.status))}
-                        tone={brainStatusTone(brain.status)}
-                        theme={theme}
+                <View key={brain.brainId}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={brain.name}
+                    onPress={() => setSelectedBrainId(brain.brainId)}
+                    style={({ pressed }) => [
+                      styles.row,
+                      {
+                        paddingTop: layout.compact ? 12 : 14,
+                        paddingBottom: directFallback ? 8 : layout.compact ? 12 : 14,
+                        paddingHorizontal: padH,
+                        opacity: pressed ? 0.75 : 1,
+                      },
+                    ]}
+                  >
+                    <View style={styles.rowLeading}>
+                      <Icon
+                        name={osIconName(brain.os)}
+                        size={18}
+                        color={theme.colors.foregroundMuted}
                       />
                     </View>
-                    <Text
-                      numberOfLines={1}
-                      style={[styles.rowMeta, { color: theme.colors.foregroundMuted }]}
+                    <View style={styles.rowMain}>
+                      <View style={styles.rowTop}>
+                        <Text
+                          numberOfLines={1}
+                          style={[styles.rowTitle, { color: theme.colors.foreground }]}
+                        >
+                          {brain.name}
+                        </Text>
+                        <StatusBadge
+                          label={t(brainStatusKey(brain.status))}
+                          tone={brainStatusTone(brain.status)}
+                          theme={theme}
+                        />
+                      </View>
+                      <View style={styles.rowMetaLine}>
+                        <Text
+                          numberOfLines={1}
+                          style={[styles.rowMeta, { color: theme.colors.foregroundMuted }]}
+                        >
+                          {metaText}
+                        </Text>
+                        {brain.transport ? (
+                          <TransportBadge
+                            transport={brain.transport}
+                            label={
+                              brain.transport === "direct"
+                                ? t("transport.direct")
+                                : t("transport.relay")
+                            }
+                            theme={theme}
+                          />
+                        ) : null}
+                      </View>
+                      {!directFallback && brain.lastError ? (
+                        <Text
+                          numberOfLines={2}
+                          style={[styles.rowError, { color: theme.colors.statusDanger }]}
+                        >
+                          {brain.lastError}
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Icon name="ChevronRight" size={16} color={theme.colors.foregroundMuted} />
+                  </Pressable>
+                  {directFallback && brain.lastError ? (
+                    <View
+                      style={[
+                        styles.fallbackWrap,
+                        {
+                          paddingHorizontal: padH,
+                          paddingBottom: layout.compact ? 12 : 14,
+                        },
+                      ]}
                     >
-                      {metaParts.join(" · ")}
-                    </Text>
-                    {brain.lastError ? (
-                      <Text
-                        numberOfLines={2}
-                        style={[styles.rowError, { color: theme.colors.statusDanger }]}
-                      >
-                        {brain.lastError}
-                      </Text>
-                    ) : null}
-                  </View>
-                  <Icon name="ChevronRight" size={16} color={theme.colors.foregroundMuted} />
-                </Pressable>
+                      <DirectFallbackNotice
+                        title={t("remoteMachines.directFallbackTitle")}
+                        reason={brain.lastError}
+                        expandLabel={t("remoteMachines.directFallbackShowReason")}
+                        collapseLabel={t("remoteMachines.directFallbackHideReason")}
+                        theme={theme}
+                        compact
+                      />
+                    </View>
+                  ) : null}
+                </View>
               );
             })}
           </SettingsCard>
         )}
       </SettingsSection>
+
+      <DirectAccelerationSection theme={theme} layout={layout} />
 
       <AddBrainModal
         open={addModalOpen}
@@ -228,11 +269,20 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     flexShrink: 1,
   },
+  rowMetaLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+  },
   rowMeta: {
     fontSize: 13,
   },
   rowError: {
     fontSize: 12,
     lineHeight: 16,
+  },
+  fallbackWrap: {
+    paddingTop: 2,
   },
 });

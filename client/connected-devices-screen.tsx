@@ -31,6 +31,7 @@ import {
   type Device,
   type Endpoint,
 } from "../shared/settings";
+import { DirectAccelerationSection } from "./direct-acceleration-section";
 import { InviteDeviceModal } from "./invite-device-modal";
 import {
   endpointStatusKey,
@@ -41,6 +42,7 @@ import {
 import {
   ActionButton,
   ConfirmModal,
+  DirectFallbackNotice,
   EmptyStateCard,
   NoticeBox,
   StatusBadge,
@@ -340,13 +342,23 @@ export function ConnectedDevicesScreen({ theme, layout, host }: PluginSurfacePro
         ) : null}
 
         {endpointData?.lastError ? (
-          <NoticeBox
-            tone="danger"
-            icon="AlertTriangle"
-            title={t("connectedDevices.lastErrorLabel")}
-            items={[endpointData.lastError]}
-            theme={theme}
-          />
+          endpointData.status === "connected" ? (
+            <DirectFallbackNotice
+              title={t("remoteMachines.directFallbackTitle")}
+              reason={endpointData.lastError}
+              expandLabel={t("remoteMachines.directFallbackShowReason")}
+              collapseLabel={t("remoteMachines.directFallbackHideReason")}
+              theme={theme}
+            />
+          ) : (
+            <NoticeBox
+              tone="danger"
+              icon="AlertTriangle"
+              title={t("connectedDevices.lastErrorLabel")}
+              items={[endpointData.lastError]}
+              theme={theme}
+            />
+          )
         ) : null}
 
         {switchedRelay ? (
@@ -740,6 +752,8 @@ export function ConnectedDevicesScreen({ theme, layout, host }: PluginSurfacePro
           />
         </SettingsCard>
       </SettingsSection>
+
+      <DirectAccelerationSection theme={theme} layout={layout} />
 
       <InviteDeviceModal
         open={inviteOpen}

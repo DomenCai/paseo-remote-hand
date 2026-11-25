@@ -74,6 +74,9 @@ export const messages = defineTranslations({
         transportLabel: "Transport",
         relayLabel: "Relay",
         lastErrorLabel: "Last error",
+        directFallbackTitle: "Direct connection unavailable, using relay",
+        directFallbackShowReason: "Show reason",
+        directFallbackHideReason: "Hide reason",
         updateRelayLabel: "Update relay address",
         updateRelayHint:
           "Keeps the existing pairing identity and reconnects through the new relay.",
@@ -224,6 +227,35 @@ export const messages = defineTranslations({
         expiresIn: "Expires in {{remaining}}",
         expired: "Expired",
       },
+      direct: {
+        sectionTitle: "Direct acceleration (experimental)",
+        connecting: "Loading direct acceleration settings…",
+        watchError: "Unable to watch direct acceleration settings: {{message}}",
+        watchClosed: "Direct acceleration settings stream closed.",
+        enableLabel: "Enable direct acceleration",
+        enableHint:
+          "Machine-wide setting shared by remote machines and connected devices. Direct connections are attempted only when both sides enable it and configure rendezvous peers.",
+        peersLabel: "Rendezvous peers",
+        peersCount: "{{count}} / {{max}}",
+        peersHint: "Enter tcp://host:port or udp://host:port addresses (up to {{max}}).",
+        peersEmpty: "No rendezvous peers configured.",
+        peersNeededHint:
+          "Enabled without rendezvous peers. Add at least one peer and save before direct connections will be attempted.",
+        peerInputLabel: "Add rendezvous peer",
+        peerPlaceholder: "tcp://host:port or udp://host:port",
+        peerInvalid:
+          "Enter a valid address in tcp://host:port or udp://host:port format (use [IPv6]:port for IPv6).",
+        peerDuplicate: "This rendezvous peer is already in the list.",
+        peersLimit: "You can configure at most {{max}} rendezvous peers.",
+        saveLabel: "Save direct acceleration settings",
+        saved: "Direct acceleration settings saved",
+        noteFasterFallback:
+          "Direct connections are faster when established; if unavailable, traffic automatically stays on relay without interrupting use.",
+        noteRendezvousOnly:
+          "Rendezvous peers only help both sides establish a connection and do not forward application traffic.",
+        noteEasyTierDownload:
+          "Enabling for the first time downloads a verified EasyTier component (LGPL-3.0).",
+      },
     },
     "zh-CN": {
       screens: {
@@ -271,7 +303,7 @@ export const messages = defineTranslations({
         disconnected: "已断开",
       },
       transport: {
-        relay: "中继",
+        relay: "relay",
         direct: "直连",
       },
       policy: {
@@ -296,6 +328,9 @@ export const messages = defineTranslations({
         transportLabel: "传输方式",
         relayLabel: "中继地址",
         lastErrorLabel: "最近错误",
+        directFallbackTitle: "直连未建立，正在使用 relay",
+        directFallbackShowReason: "查看原因",
+        directFallbackHideReason: "收起原因",
         updateRelayLabel: "更新 relay 地址",
         updateRelayHint: "保留原有配对身份，仅替换 relay 地址并重新连接。",
         updateRelayPlaceholder: "host:port",
@@ -425,6 +460,35 @@ export const messages = defineTranslations({
         expiresAt: "到期时间：{{time}}",
         expiresIn: "剩余 {{remaining}}",
         expired: "已过期",
+      },
+      direct: {
+        sectionTitle: "直连加速（实验性）",
+        connecting: "正在加载直连加速配置…",
+        watchError: "无法监听直连加速配置：{{message}}",
+        watchClosed: "直连加速配置订阅已关闭。",
+        enableLabel: "启用直连加速",
+        enableHint:
+          "本机全局配置，作为远端机器和已连接设备时共用。只有两端都启用并各自配置会合节点，才会尝试直连。",
+        peersLabel: "会合节点",
+        peersCount: "{{count}} / {{max}}",
+        peersHint: "填写 tcp://host:port 或 udp://host:port 格式地址，最多 {{max}} 个。",
+        peersEmpty: "尚未配置会合节点。",
+        peersNeededHint:
+          "已开启开关但尚未配置会合节点；请至少添加一个会合节点并保存，才会尝试直连。",
+        peerInputLabel: "添加会合节点",
+        peerPlaceholder: "tcp://host:port 或 udp://host:port",
+        peerInvalid:
+          "地址格式无效，请输入 tcp://host:port 或 udp://host:port（IPv6 请使用 [IPv6]:port）。",
+        peerDuplicate: "该会合节点已在列表中。",
+        peersLimit: "最多只能配置 {{max}} 个会合节点。",
+        saveLabel: "保存直连加速配置",
+        saved: "已保存直连加速配置",
+        noteFasterFallback:
+          "直连在打通时更快；打不通时自动使用 relay，不影响使用。",
+        noteRendezvousOnly:
+          "会合节点只帮两端建立连接，不转发业务数据。",
+        noteEasyTierDownload:
+          "首次启用时会下载一个经过校验的 EasyTier 组件（LGPL-3.0）。",
       },
     },
   },

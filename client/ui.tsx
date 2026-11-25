@@ -1,6 +1,6 @@
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { Icon, Modal } from "@getpaseo/plugin/client/ui";
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 export type PluginTheme = PluginSurfaceProps["theme"];
@@ -99,6 +99,118 @@ export function StatusBadge({
     <View style={styles.badge}>
       <View style={[styles.dot, { backgroundColor: color }]} />
       <Text style={[styles.badgeText, { color }]}>{label}</Text>
+    </View>
+  );
+}
+
+export function TransportBadge({
+  transport,
+  label,
+  theme,
+}: {
+  transport: "direct" | "relay";
+  label: string;
+  theme: PluginTheme;
+}) {
+  const isDirect = transport === "direct";
+  return (
+    <View
+      style={[
+        styles.transportBadge,
+        {
+          backgroundColor: isDirect ? theme.colors.accent : theme.colors.surface2,
+          borderColor: isDirect ? theme.colors.accent : theme.colors.border,
+        },
+      ]}
+    >
+      {isDirect ? (
+        <Icon name="Zap" size={11} color={theme.colors.accentForeground} />
+      ) : null}
+      <Text
+        style={[
+          styles.transportBadgeText,
+          {
+            color: isDirect ? theme.colors.accentForeground : theme.colors.foregroundMuted,
+            fontWeight: isDirect ? "600" : "500",
+          },
+        ]}
+      >
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+export function DirectFallbackNotice({
+  title,
+  reason,
+  expandLabel,
+  collapseLabel,
+  theme,
+  compact = false,
+}: {
+  title: string;
+  reason: string;
+  expandLabel: string;
+  collapseLabel: string;
+  theme: PluginTheme;
+  compact?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <View
+      style={[
+        compact ? styles.fallbackCompact : styles.fallbackBox,
+        {
+          backgroundColor: compact ? theme.colors.surface2 : theme.colors.surface1,
+          borderColor: theme.colors.border,
+        },
+      ]}
+    >
+      <View style={styles.fallbackHeader}>
+        <View style={styles.fallbackTitleRow}>
+          <Icon name="Info" size={14} color={theme.colors.foregroundMuted} />
+          <Text
+            style={[
+              styles.fallbackTitle,
+              { color: compact ? theme.colors.foregroundMuted : theme.colors.foreground },
+            ]}
+          >
+            {title}
+          </Text>
+        </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded }}
+          onPress={() => setExpanded((current) => !current)}
+          style={({ pressed }) => [styles.fallbackToggle, { opacity: pressed ? 0.7 : 1 }]}
+        >
+          <Text style={[styles.fallbackToggleText, { color: theme.colors.foregroundMuted }]}>
+            {expanded ? collapseLabel : expandLabel}
+          </Text>
+          <Icon
+            name={expanded ? "ChevronUp" : "ChevronDown"}
+            size={14}
+            color={theme.colors.foregroundMuted}
+          />
+        </Pressable>
+      </View>
+      {expanded ? (
+        <Text
+          selectable
+          style={[
+            styles.fallbackReason,
+            {
+              color: theme.colors.foregroundMuted,
+              backgroundColor: compact ? theme.colors.surface1 : theme.colors.surface2,
+              borderColor: theme.colors.border,
+            },
+          ]}
+        >
+          {reason}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -288,6 +400,68 @@ const styles = StyleSheet.create({
   badgeText: {
     fontSize: 13,
     fontWeight: "500",
+  },
+  transportBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  transportBadgeText: {
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  fallbackBox: {
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+    gap: 8,
+  },
+  fallbackCompact: {
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 6,
+  },
+  fallbackHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  fallbackTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flexShrink: 1,
+  },
+  fallbackTitle: {
+    fontSize: 12,
+    lineHeight: 17,
+    flexShrink: 1,
+  },
+  fallbackToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingVertical: 2,
+  },
+  fallbackToggleText: {
+    fontSize: 12,
+    fontWeight: "500",
+  },
+  fallbackReason: {
+    fontSize: 12,
+    lineHeight: 17,
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
   },
   noticeBox: {
     borderWidth: 1,
