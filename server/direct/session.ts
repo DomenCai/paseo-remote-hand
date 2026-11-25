@@ -5,7 +5,9 @@ import { z } from "zod";
 import type { DirectSettings } from "../../shared/settings.ts";
 import { ProtocolError, type Json, validate } from "../frames.ts";
 import type { Peer } from "../protocol.ts";
-import { DirectNetworkSchema, newDirectNetwork, startEasyTier } from "./easytier.ts";
+import {
+  DirectNetworkSchema, SubnetSchema, listenProbe, localSubnets, newDirectNetwork, probeBrain, startEasyTier,
+} from "./easytier.ts";
 import type { SelectedPort } from "./selected-port.ts";
 import { connectDirect, listenDirect } from "./transport.ts";
 
@@ -14,10 +16,13 @@ const stopMethod = "direct.stop";
 const changedMethod = "direct.changed";
 export const directReadyMethod = "direct.ready";
 const attemptSchema = z.object({ id: z.uuid() });
+// hand 带上本机网卡网段，brain 选两端都不重叠的虚拟网段。
+const offerRequestSchema = attemptSchema.extend({ localSubnets: z.array(SubnetSchema).max(256) });
+const portSchema = z.int().min(1).max(65535);
 const offerSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("off") }),
   z.object({ kind: z.literal("error"), message: z.string().max(240) }),
-  z.object({ kind: z.literal("ready"), network: DirectNetworkSchema, brainPort: z.int().min(1).max(65535) }),
+  z.object({ kind: z.literal("ready"), network: DirectNetworkSchema, brainPort: portSchema, probePort: portSchema }),
 ]);
 const enabled = (config: DirectSettings) => config.enabled && config.peers.length > 0;
 const unavailable = "EasyTier direct connection could not be established.";
@@ -33,6 +38,8 @@ const retryDelays = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
 const flapWindowMs = 10 * 60_000;
 const heartbeatMs = 10_000;
 const pingMs = 5_000;
+// 包含 UDP 探测等待；跨机实测直连约 25 秒建立，留出余量。
+const negotiateMs = 45_000;
 const heartbeatMisses = 3;
 const pollMs = 10_000;
 // 定时器在睡眠期间不走，墙钟会；醒来后的差值远大于等待时间。
@@ -81,13 +88,12 @@ export function brainDirect({
   });
   // 协商可能包含首次下载。用控制请求的长超时，但仍通过应用 handler 接收取消。
   port.handle(offerMethod, async (payload, incoming): Promise<Json> => {
-    const { id } = validate(attemptSchema, payload);
+    const { id, localSubnets: handSubnets } = validate(offerRequestSchema, payload);
     end();
     const config = settings();
     if (!enabled(config)) return { kind: "off" };
     const attempt = current = { id, stop: new AbortController() };
     const signal = AbortSignal.any([port.signal, incoming, attempt.stop.signal]);
-    const network = newDirectNetwork();
     const timer = setTimeout(() => {
       if (current !== attempt) return;
       end();
@@ -100,6 +106,7 @@ export function brainDirect({
     let chosen: Peer | undefined;
     status();
     try {
+      const network = newDirectNetwork([...handSubnets, ...localSubnets()]);
       const listener = await listenDirect(keys, (peer) => {
         accept(peer, signal, (authenticated) => {
           if (chosen || signal.aborted) throw new ProtocolError("busy");
@@ -119,8 +126,9 @@ export function brainDirect({
           status(stopped);
         });
       }, signal);
+      const probePort = await listenProbe(network, signal);
       const instance = await startEasyTier({
-        role: "brain", network, brainPort: listener.port, peers: config.peers, ...topology, stateDir, signal,
+        role: "brain", network, brainPort: listener.port, probePort, peers: config.peers, ...topology, stateDir, signal,
         setupSignal: AbortSignal.any([signal, AbortSignal.timeout(installMs)]),
       });
       if (!instance) throw new Error(unavailable);
@@ -131,7 +139,7 @@ export function brainDirect({
       };
       void instance.closed.then(instanceEnded, instanceEnded);
       signal.throwIfAborted();
-      return { kind: "ready", network, brainPort: listener.port };
+      return { kind: "ready", network, brainPort: listener.port, probePort };
     } catch (error) {
       const message = safeError(error);
       if (current === attempt) {
@@ -237,7 +245,7 @@ export function handDirect({
     try {
       let raw: unknown;
       try {
-        raw = await relay.request(offerMethod, { id }, offerMs, scope);
+        raw = await relay.request(offerMethod, { id, localSubnets: localSubnets() }, offerMs, scope);
       } catch (error) {
         // 未实现直连的旧版 brain 仍可走 relay。
         if (error instanceof ProtocolError && error.code === "invalid") return { error: remoteUnsupported, permanent: true };
@@ -248,18 +256,20 @@ export function handDirect({
       if (offer.kind === "off") return { error: remoteOff, permanent: true };
       if (offer.kind === "error") return { error: offer.message, permanent: permanentError.test(offer.message) };
       const instance = await startEasyTier({
-        role: "hand", network: offer.network, brainPort: offer.brainPort, peers: config.peers, ...topology,
+        role: "hand", network: offer.network, brainPort: offer.brainPort, probePort: offer.probePort, peers: config.peers, ...topology,
         stateDir, signal: scope, setupSignal: AbortSignal.any([scope, AbortSignal.timeout(installMs)]),
       });
-      if (!instance?.forwardPort) throw new Error(unavailable);
+      if (!instance?.forwardPort || !instance.probeForwardPort) throw new Error(unavailable);
       const linkSignal = AbortSignal.any([scope, instance.signal]);
-      const negotiate = AbortSignal.any([linkSignal, AbortSignal.timeout(25_000)]);
+      const negotiate = AbortSignal.any([linkSignal, AbortSignal.timeout(negotiateMs)]);
+      // 对端路由就绪前连 TCP 转发，EasyTier 会改用系统网络直连虚拟 IP。
+      await probeBrain(instance.probeForwardPort, offer.network, negotiate);
       while (!peer) {
         negotiate.throwIfAborted();
         const timeout = new AbortController();
         const timer = setTimeout(() => timeout.abort(), 2_000);
         try {
-          // 转发端口先于打洞就绪；只重试建链和认证，不重试业务操作。
+          // 只重试建链和认证，不重试业务操作。
           peer = await connectDirect(instance.forwardPort, brain, AbortSignal.any([linkSignal, timeout.signal]));
         } catch (error) {
           if (error instanceof ProtocolError && error.code === "revoked") throw error;
