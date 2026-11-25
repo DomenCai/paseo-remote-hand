@@ -60,13 +60,13 @@ function loopback() {
 type State = NonNullable<Awaited<ReturnType<PaseoAgentHandle["refresh"]>>>["agent"];
 type Item = Awaited<ReturnType<PaseoAgentHandle["timeline"]["refetch"]>>["entries"][number]["item"];
 type OpenHook = (payload: PluginHookPayload<"agent.open.before">) => Promise<PluginSessionOpenRequest | undefined>;
-type CloseHook = (payload: PluginHookPayload<"agent.close.after">) => Promise<void>;
+type AgentHook = (payload: { agent: { id: string; metadata?: unknown } }) => Promise<void>;
 
 type CatalogEntry = Awaited<ReturnType<PaseoApi["providers"]["snapshot"]>>["entries"][number];
 
 function fakePaseo(extraProviders: CatalogEntry[] = [], providerBases: Record<string, string> = {}) {
-  let openHook: OpenHook | undefined;
-  let closeHook: CloseHook | undefined;
+  const hooks = new Map<string, OpenHook | AgentHook>();
+  const agentHook = (name: string, agent: { id: string; metadata?: unknown }) => (hooks.get(name) as AgentHook | undefined)?.({ agent });
   const records = new Map<string, ReturnType<typeof record>>();
   const titles = new Map<string, string>();
   const responses: unknown[] = [];
@@ -101,6 +101,7 @@ function fakePaseo(extraProviders: CatalogEntry[] = [], providerBases: Record<st
       if (!active) return;
       const turnId = active;
       active = null;
+      void agentHook("agent.turn.after", { id, metadata });
       emit(state === "completed" ? { type: "turn_completed", provider, turnId } :
         { type: "turn_canceled", provider, turnId, reason: "Cancelled" });
     }
@@ -120,6 +121,7 @@ function fakePaseo(extraProviders: CatalogEntry[] = [], providerBases: Record<st
       },
       async send(text: string, options: { messageId: string }) {
         active = `turn-${++turns}`;
+        void agentHook("agent.turn.before", { id, metadata });
         emit({ type: "turn_started", provider, turnId: active });
         row({ type: "user_message", text, messageId: options.messageId, clientMessageId: options.messageId });
       },
@@ -195,7 +197,7 @@ function fakePaseo(extraProviders: CatalogEntry[] = [], providerBases: Record<st
           name: titles.get(cwd) ?? null,
           async setTitle(title: string) { titles.set(cwd, title); },
           agents: { async create(opts: PaseoWorkspaceAgentCreateOptions) {
-            const result = await openHook?.({ request: {
+            const result = await (hooks.get("agent.open.before") as OpenHook | undefined)?.({ request: {
               agentId: opts.agentId!, workspaceId: "workspace", cwd, provider: opts.config.provider.split("/")[0],
               reason: "create", purpose: "interactive", tools: [], labels: {}, metadata: opts.metadata ?? {},
               env: {}, mcpServers: {}, title: opts.title ?? null, background: false,
@@ -220,15 +222,10 @@ function fakePaseo(extraProviders: CatalogEntry[] = [], providerBases: Record<st
 
   return {
     api, records, titles, responses,
-    closeAgent: (agent: PluginHookPayload<"agent.close.after">["agent"]) => closeHook?.({ agent }),
-    hook: { addHook(name: string, hook: OpenHook | CloseHook) {
-      if (name === "agent.close.after") {
-        closeHook = hook as CloseHook;
-        return () => { closeHook = undefined; };
-      }
-      assert.equal(name, "agent.open.before");
-      openHook = hook as OpenHook;
-      return () => { openHook = undefined; };
+    closeAgent: (agent: PluginHookPayload<"agent.close.after">["agent"]) => agentHook("agent.close.after", agent),
+    hook: { addHook(name: string, hook: OpenHook | AgentHook) {
+      hooks.set(name, hook);
+      return () => { if (hooks.get(name) === hook) hooks.delete(name); };
     } } as unknown as Pick<PluginServerContext, "addHook">,
   };
 }
@@ -622,15 +619,28 @@ test("brain limits running sessions per device, including simultaneous requests"
   assert.match(String(rejected.reason), /already has 1 running session/);
   const running = results[0].status === "fulfilled" ? a : b;
   const idle = running === a ? b : a;
+  assert.equal(service.activeSessions("device-1"), 1);
 
   await assert.rejects(create(hand), /already has 1 running session/);
   // 给运行中的会话追加消息不受限制；其他设备有自己的名额。
   await prompt(hand, running.agentId, "follow-up");
   const foreign = await create(other);
   await prompt(other, foreign.agentId, "foreign");
+  assert.equal(service.activeSessions("device-2"), 1);
 
   fake.records.get(running.agentId)!.finish("completed");
+  assert.equal(service.activeSessions("device-1"), 0);
   await prompt(hand, idle.agentId, "after");
   access.maxConcurrentPerDevice = 2;
   await prompt(hand, running.agentId, "second slot");
+  assert.equal(service.activeSessions("device-1"), 2);
+
+  // 插件重启后没有收到之前的 turn 钩子，设备连上时从 agent 列表补齐。
+  const restarted = createBrainAgentService({ paseoHome: path.join(dir, "brain"), async cancelAgent() {} });
+  t.after(restarted.close);
+  const pair = loopback();
+  t.after(pair.disconnect);
+  restarted.attach({ deviceId: "device-1", paseo: fake.api, access, port: pair.brain });
+  await eventually(() => restarted.activeSessions("device-1") === 2, "running sessions recounted on attach");
+  assert.equal(restarted.activeSessions("device-2"), 1);
 });

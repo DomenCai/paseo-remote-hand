@@ -101,19 +101,25 @@ async function promptTurn(agent: PaseoAgentHandle, input: z.infer<typeof remoteA
   throw new Error("Brain accepted the prompt but could not identify its turn; do not resend automatically.");
 }
 
-// 以宿主的 agent 状态为准计数，插件重启后也不会漏算。
-async function runningSessions(paseo: BrainApi, deviceId: string, except?: string) {
-  let count = 0;
+function deviceOf(metadata: Record<string, unknown> | undefined) {
+  return ownerSchema.safeParse(metadata?.[ownerKey]).data?.deviceId;
+}
+
+// 以宿主的 agent 状态为准，返回启动或运行中的会话：agentId → deviceId。插件重启后也不会漏算。
+async function runningSessions(paseo: BrainApi) {
+  const running = new Map<string, string>();
   let cursor: string | undefined;
   do {
     const { entries, pageInfo } = await paseo.agents.list({
       filter: { statuses: ["initializing", "running"] }, page: { limit: 200, cursor },
     });
-    count += entries.filter(({ agent }) => agent.id !== except &&
-      ownerSchema.safeParse(agent.metadata?.[ownerKey]).data?.deviceId === deviceId).length;
+    for (const { agent } of entries) {
+      const deviceId = deviceOf(agent.metadata);
+      if (deviceId) running.set(agent.id, deviceId);
+    }
     cursor = pageInfo.hasMore ? pageInfo.nextCursor ?? undefined : undefined;
   } while (cursor);
-  return count;
+  return running;
 }
 
 export function createBrainAgentService({ paseoHome, cancelAgent }: {
@@ -128,6 +134,23 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
   // 同一设备的建会话和发消息排队执行：上一个请求让会话进入运行后，下一个才计数，
   // 所以同时到达的请求不会一起越过并发上限。
   const deviceQueues = new Map<string, Promise<void>>();
+  // 设备列表显示的运行中会话。由 turn 钩子增量维护：钩子是异步通知，回头查列表可能读到旧状态。
+  // 设备连上时用列表整体校正一次，补上插件重启前已在运行或漏掉的事件。
+  const shown = new Map<string, string>();
+  const shownListeners = new Set<() => void>();
+
+  function setShown(agentId: string, deviceId: string | undefined) {
+    if (shown.get(agentId) === deviceId) return;
+    if (deviceId) shown.set(agentId, deviceId);
+    else shown.delete(agentId);
+    for (const listener of shownListeners) listener();
+  }
+
+  async function resyncShown(api: BrainApi) {
+    const running = await runningSessions(api);
+    for (const agentId of shown.keys()) if (!running.has(agentId)) setShown(agentId, undefined);
+    for (const [agentId, deviceId] of running) setShown(agentId, deviceId);
+  }
 
   function queued<T>(deviceId: string, task: () => Promise<T>): Promise<T> {
     const run = (deviceQueues.get(deviceId) ?? Promise.resolve()).then(task);
@@ -201,10 +224,13 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
     port.signal.addEventListener("abort", close, { once: true });
 
     const getPaseo = () => typeof paseo === "function" ? paseo() : paseo;
+    void (async () => resyncShown(await getPaseo()))()
+      .catch((error) => console.error(`Remote hand could not count running sessions: ${errorMessage(error)}`));
 
     async function checkConcurrency(api: BrainApi, except?: string) {
       const max = access.maxConcurrentPerDevice;
-      if (await runningSessions(api, deviceId, except) >= max)
+      const running = await runningSessions(api);
+      if ([...running].filter(([agentId, owner]) => owner === deviceId && agentId !== except).length >= max)
         throw new Error(`This device already has ${max} running session(s) on this brain, the most it allows. Wait for one to finish.`);
     }
 
@@ -331,10 +357,22 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
   return {
     attach,
     close: mcp.close,
+    activeSessions(deviceId: string) {
+      return [...shown.values()].filter((owner) => owner === deviceId).length;
+    },
+    onActiveSessionsChange(listener: () => void) {
+      shownListeners.add(listener);
+      return () => { shownListeners.delete(listener); };
+    },
     registerHook(server: Pick<PluginServerContext, "addHook">) {
-      const removeOpen = server.addHook("agent.open.before", openHook);
-      const removeClose = server.addHook("agent.close.after", async ({ agent }) => { mcp.revoke(agent.id); });
-      return () => { removeOpen(); removeClose(); };
+      const removers = [
+        server.addHook("agent.open.before", openHook),
+        server.addHook("agent.close.after", async ({ agent }) => { mcp.revoke(agent.id); setShown(agent.id, undefined); }),
+        server.addHook("agent.turn.before", async ({ agent }) => { setShown(agent.id, deviceOf(agent.metadata)); }),
+        server.addHook("agent.turn.after", async ({ agent }) => { setShown(agent.id, undefined); }),
+        server.addHook("agent.archive.after", async ({ agent }) => { setShown(agent.id, undefined); }),
+      ];
+      return () => { for (const remove of removers) remove(); };
     },
   };
 }

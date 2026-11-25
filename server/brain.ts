@@ -67,11 +67,16 @@ export class BrainService {
   readonly #store: StateStore;
   readonly #now: () => number;
   readonly #attach?: (deviceId: string, port: ConnectionPort) => void;
+  readonly #activeSessions?: (deviceId: string) => number;
 
-  constructor(store: StateStore, now = Date.now, attach?: (deviceId: string, port: ConnectionPort) => void) {
+  constructor(
+    store: StateStore, now = Date.now, attach?: (deviceId: string, port: ConnectionPort) => void,
+    activeSessions?: (deviceId: string) => number,
+  ) {
     this.#store = store;
     this.#now = now;
     this.#attach = attach;
+    this.#activeSessions = activeSessions;
   }
 
   start(): void {
@@ -145,7 +150,8 @@ export class BrainService {
 
   devices(): Device[] {
     return Object.entries(this.#store.current.devices).map(([deviceId, device]) => ({
-      deviceId, ...device, online: !!this.#peers.get(deviceId)?.size, activeSessions: 0,
+      deviceId, ...device, online: !!this.#peers.get(deviceId)?.size,
+      activeSessions: this.#activeSessions?.(deviceId) ?? 0,
     }));
   }
 

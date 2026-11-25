@@ -17,4 +17,6 @@
 
 同一设备的 `agent.create` 和 `agent.prompt` 按设备排队执行。上一个请求的会话进入运行状态后，下一个请求才开始计数，所以同时到达的请求不会一起越过上限。给已在运行的会话追加消息时，计数会排除这个会话本身。
 
+设备列表里显示的会话数不用上面的列表查询，而是由 `agent.turn.before`、`agent.turn.after`、关闭和归档这几个钩子增量维护。Paseo 是在派发 agent 事件时异步通知插件的，在钩子里回头查列表，可能读到状态更新前的结果。设备连上时会用列表整体校正一次，补上插件重启前已在运行的会话。这几个钩子在 0.16.1 的插件包里都有。
+
 依据：Paseo `provider-snapshot-manager.ts`、`codex-app-server-agent.ts`、`claude/agent.ts` 中 `defaultModeId` 的来源；`fetch_agents_request` 的 `filter.statuses`。回归测试见 `server/provider/remote-agent.test.ts` 的 "brain limits running sessions per device"；去掉排队后这条测试会失败。

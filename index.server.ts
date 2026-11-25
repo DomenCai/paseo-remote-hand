@@ -22,7 +22,8 @@ export default function contribute(server: PluginServerContext) {
   };
   const brain = new BrainService(state, Date.now, (deviceId, port) => {
     agents.attach({ deviceId, paseo: local.api, access: accessPolicy, port });
-  });
+  }, agents.activeSessions);
+  const unsubscribeSessions = agents.onActiveSessionsChange(() => brain.snapshots.changed());
   const hand = new HandService(state);
   const provider = createHandProvider({
     listBrains: () => hand.brains().map(({ brainId, name }) => ({ id: brainId, name, port: hand.port(brainId) })),
@@ -88,6 +89,7 @@ export default function contribute(server: PluginServerContext) {
   return async () => {
     stopping = true;
     unsubscribeModels();
+    unsubscribeSessions();
     unregisterHook();
     await agents.close();
     await provider.dispose();
