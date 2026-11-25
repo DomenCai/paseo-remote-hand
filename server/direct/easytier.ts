@@ -1,21 +1,61 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { createSocket } from "node:dgram";
+import { once, on } from "node:events";
 import { rmSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { createServer, type AddressInfo } from "node:net";
+import { createServer, isIPv4, type AddressInfo } from "node:net";
+import { networkInterfaces } from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { ensureEasyTier } from "./easytier-binary.ts";
 
 const loopback = "127.0.0.1";
-export const directIp = { brain: "198.18.0.1", hand: "198.18.0.2" } as const;
+// RFC 5737 的 TEST-NET-2/3 只用于文档，不会是公网主机、常见 LAN、CGNAT 或 fake-ip 地址。
+// 每代只需两个地址，切成 /30 以尽量少占地址；EasyTier 会拒绝远端地址落在本机虚拟网段里的隧道。
+const directSubnets = ["198.51.100", "203.0.113"].flatMap((prefix) =>
+  Array.from({ length: 64 }, (_, index) => `${prefix}.${index * 4}/30`));
+export const SubnetSchema = z.string().max(18).refine((value) => {
+  const [address, bits, ...rest] = value.split("/");
+  return !rest.length && isIPv4(address) && /^\d{1,2}$/.test(bits ?? "") && Number(bits) <= 32;
+});
 export const DirectNetworkSchema = z.strictObject({
   name: z.string().regex(/^rh-[A-Za-z0-9_-]{22}$/),
   secret: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  subnet: z.string().refine((value) => directSubnets.includes(value)),
 });
 export type DirectNetwork = z.infer<typeof DirectNetworkSchema>;
-export function newDirectNetwork(): DirectNetwork {
-  return { name: `rh-${randomBytes(16).toString("base64url")}`, secret: randomBytes(32).toString("base64url") };
+
+function ipv4Range(cidr: string): [number, number] {
+  const [address, bits] = cidr.split("/");
+  const value = address.split(".").reduce((sum, octet) => sum * 256 + Number(octet), 0);
+  const size = 2 ** (32 - Number(bits));
+  const start = value - (value % size);
+  return [start, start + size - 1];
+}
+
+/** 本机 IPv4 网卡所在网段，协商时双方都要避开。 */
+export function localSubnets(): string[] {
+  return Object.values(networkInterfaces()).flat().flatMap((item) =>
+    item?.family === "IPv4" && !item.internal && item.cidr ? [item.cidr] : []);
+}
+
+/** avoid 是两端网卡网段；取第一个与它们都不重叠的候选网段。 */
+export function newDirectNetwork(avoid: readonly string[]): DirectNetwork {
+  const used = avoid.map(ipv4Range);
+  const subnet = directSubnets.find((candidate) => {
+    const [start, end] = ipv4Range(candidate);
+    return used.every(([from, to]) => to < start || end < from);
+  });
+  if (!subnet) throw new Error("No free EasyTier direct subnet.");
+  return { name: `rh-${randomBytes(16).toString("base64url")}`, secret: randomBytes(32).toString("base64url"), subnet };
+}
+
+function directIp(subnet: string) {
+  const [address] = subnet.split("/");
+  const prefix = address.slice(0, address.lastIndexOf(".") + 1);
+  const base = Number(address.slice(prefix.length));
+  return { brain: `${prefix}${base + 1}`, hand: `${prefix}${base + 2}` };
 }
 
 type Forward = { bindPort: number; destinationPort: number; protocol: "tcp" | "udp" };
@@ -23,6 +63,8 @@ type Config = {
   network: DirectNetwork;
   role: "hand" | "brain";
   brainPort: number;
+  // brain 本机的 UDP 路由探测应答端口，见 listenProbe。
+  probePort: number;
   peers?: readonly string[];
   listeners?: readonly string[];
   // 空数组关闭 STUN，供纯 loopback 验证或显式部署设置使用。
@@ -45,12 +87,14 @@ function address(value: string) {
 
 /** 配置里的 inbound 只限制新流量，EasyTier 的 ACL 会放行本机发起的连接的回包。 */
 export function easyTierConfig(input: Config, forwards: readonly Forward[] = []): string {
-  const { name, secret } = DirectNetworkSchema.parse(input.network);
+  const { name, secret, subnet } = DirectNetworkSchema.parse(input.network);
   const entry = port(input.brainPort);
-  const other = directIp[input.role === "brain" ? "hand" : "brain"];
+  const probe = port(input.probePort);
+  const ip = directIp(subnet);
+  const other = ip[input.role === "brain" ? "hand" : "brain"];
   const ready = [
     'instance_name = "remote-hand"',
-    `ipv4 = "${directIp[input.role]}/24"`,
+    `ipv4 = "${ip[input.role]}/30"`,
     "dhcp = false",
     `listeners = ${JSON.stringify((input.listeners ?? []).map(address))}`,
     ...(input.stunServers ? [`stun_servers = ${JSON.stringify(input.stunServers)}`, "stun_servers_v6 = []"] : []),
@@ -84,17 +128,19 @@ export function easyTierConfig(input: Config, forwards: readonly Forward[] = [])
     "default_action = 2",
   ];
   if (input.role === "brain") {
-    ready.push(
-      "", "[[acl.acl_v1.chains.rules]]",
-      'name = "remote-hand-entry"',
-      "enabled = true",
-      "priority = 1000",
-      "action = 1",
-      "protocol = 1",
-      `ports = ["${entry}"]`,
-      `source_ips = ["${other}/32"]`,
-      `destination_ips = ["${directIp.brain}/32"]`,
-    );
+    for (const [rule, protocol, allowed] of [["remote-hand-entry", 1, entry], ["remote-hand-probe", 2, probe]] as const) {
+      ready.push(
+        "", "[[acl.acl_v1.chains.rules]]",
+        `name = "${rule}"`,
+        "enabled = true",
+        "priority = 1000",
+        "action = 1",
+        `protocol = ${protocol}`,
+        `ports = ["${allowed}"]`,
+        `source_ips = ["${other}/32"]`,
+        `destination_ips = ["${ip.brain}/32"]`,
+      );
+    }
   }
   ready.push("", "[[acl.acl_v1.chains]]", 'name = "remote-hand-forward"', "chain_type = 3",
     "enabled = true", "default_action = 2", "");
@@ -112,8 +158,68 @@ export async function localTcpPort(): Promise<number> {
   return assigned;
 }
 
+async function localUdpPort(): Promise<number> {
+  const socket = createSocket("udp4");
+  socket.bind(0, loopback);
+  await once(socket, "listening");
+  const assigned = socket.address().port;
+  socket.close();
+  return assigned;
+}
+
+/** brain 侧：只对本代网络名作应答。ACL 只放行对端虚拟 IP 到这个 UDP 端口。 */
+export async function listenProbe(network: DirectNetwork, signal: AbortSignal): Promise<number> {
+  const token = Buffer.from(network.name);
+  const socket = createSocket("udp4");
+  let open = true;
+  const close = () => {
+    if (!open) return;
+    open = false;
+    signal.removeEventListener("abort", close);
+    socket.close();
+  };
+  socket.on("message", (message, remote) => {
+    if (token.equals(message)) socket.send(token, remote.port, remote.address);
+  });
+  signal.addEventListener("abort", close, { once: true });
+  try {
+    socket.bind(0, loopback);
+    await once(socket, "listening", { signal });
+    // 应答失败时关闭；hand 收不到应答，按协商超时回落 relay。
+    socket.on("error", close);
+    return socket.address().port;
+  } catch (error) {
+    close();
+    throw error;
+  }
+}
+
+/**
+ * hand 侧：经 UDP 转发等到 brain 应答后才可连 TCP 转发。
+ * v2.6.4 的 TCP 转发在本机路由表还没有目的虚拟 IP 时，会用系统网络直接连这个地址
+ * （gateway/socks5.rs 的 Socks5AutoConnector）；UDP 转发只经虚拟网络发送，没有这条回落。
+ * 收到应答说明对端路由已就绪且直连数据通路可用。
+ */
+export async function probeBrain(forwardPort: number, network: DirectNetwork, signal: AbortSignal): Promise<void> {
+  const token = Buffer.from(network.name);
+  const socket = createSocket("udp4");
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    socket.bind(0, loopback);
+    await once(socket, "listening", { signal });
+    const messages = on(socket, "message", { signal });
+    const send = () => socket.send(token, forwardPort, loopback);
+    timer = setInterval(send, 500);
+    send();
+    for await (const [message] of messages) if (token.equals(message)) return;
+  } finally {
+    clearInterval(timer);
+    socket.close();
+  }
+}
+
 // 低层进程入口也从已校验的缓存启动；测试用同一路径加载两端的隔离配置。
-export async function runEasyTier(install: Install, config: string, forwards: readonly number[]) {
+export async function runEasyTier(install: Install, config: string, forwards: readonly Forward[]) {
   const { stateDir, signal } = install;
   const setup = install.setupSignal ?? signal;
   const binary = await ensureEasyTier(stateDir, { ...install, signal: setup });
@@ -172,7 +278,7 @@ export async function runEasyTier(install: Install, config: string, forwards: re
     try {
       await new Promise<void>((resolve, reject) => {
         let initialized = false;
-        const remaining = new Set(forwards);
+        const remaining = new Set(forwards.map((rule) => `${rule.protocol}:${rule.bindPort}`));
         const channels = [child.stdout, child.stderr];
         const pending = ["", ""];
         function onData(chunk: string, index: number) {
@@ -182,8 +288,8 @@ export async function runEasyTier(install: Install, config: string, forwards: re
             // v2.6.4：ACL 和入站 proxy 已加载，才注册打洞 RPC；forward 另等对应的成功日志。
             if (text.includes("tcp hole punch server register rpc")) initialized = true;
             if (text.includes("port forward added")) {
-              const matched = /local=127\.0\.0\.1:(\d+)/.exec(text);
-              if (matched) remaining.delete(Number(matched[1]));
+              const matched = /local=127\.0\.0\.1:(\d+) .*proto=(TCP|UDP)/.exec(text);
+              if (matched) remaining.delete(`${matched[2].toLowerCase()}:${matched[1]}`);
             }
           }
           if (initialized && !remaining.size) finish();
@@ -223,10 +329,10 @@ export async function runEasyTier(install: Install, config: string, forwards: re
 
 export async function startEasyTier(options: Config & Install) {
   if (!options.peers?.length && !options.listeners?.length) return undefined;
-  const forwardPort = options.role === "hand" ? await localTcpPort() : undefined;
-  const config = easyTierConfig(options, forwardPort ? [
-    { bindPort: forwardPort, destinationPort: options.brainPort, protocol: "tcp" },
-  ] : []);
-  const instance = await runEasyTier(options, config, forwardPort ? [forwardPort] : []);
-  return { ...instance, forwardPort };
+  const forwards: Forward[] = options.role === "hand" ? [
+    { bindPort: await localTcpPort(), destinationPort: options.brainPort, protocol: "tcp" },
+    { bindPort: await localUdpPort(), destinationPort: options.probePort, protocol: "udp" },
+  ] : [];
+  const instance = await runEasyTier(options, easyTierConfig(options, forwards), forwards);
+  return { ...instance, forwardPort: forwards[0]?.bindPort, probeForwardPort: forwards[1]?.bindPort };
 }

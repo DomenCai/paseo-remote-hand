@@ -26,16 +26,18 @@ npm test
 npm run test:direct
 ```
 
-`npm run test:direct` 会获取本平台的官方 ZIP。已有 ZIP 时可用 `EASYTIER_TEST_ZIP=/absolute/path/to/release.zip npm run test:direct`，两种方式都校验摘要。测试不使用公网 peers 或 STUN。它启动本机双实例，先验证四个仿真服务在正对照中均能收到并回包，然后开启 ACL 验证两方向的 TCP、UDP 探针均到不了目标服务。同一测试覆盖允许入口的 M0 认证、96 KiB payload、错误密钥、未知和撤销设备、进程退出清理。
+`npm run test:direct` 会获取本平台的官方 ZIP。已有 ZIP 时可用 `EASYTIER_TEST_ZIP=/absolute/path/to/release.zip npm run test:direct`，两种方式都校验摘要。测试不使用公网 peers 或 STUN。它启动本机双实例，先验证四个仿真服务在正对照中均能收到并回包，然后开启 ACL 验证两方向的 TCP、UDP 探针均到不了目标服务。同一测试覆盖路由探测应答后再连入口、允许入口的 M0 认证、96 KiB payload、错误密钥、未知和撤销设备、进程退出清理，另有虚拟网段避让的单元测试。
 
 ## 生命周期
 
-1. hand 从已认证的 relay 发送 `direct.offer`。brain 为该代生成临时网络名和密钥，通过该加密连接返回。两端各自采用本机配置的会合 URL。
-2. brain 的回环入口只接收和 relay 相同的设备身份。hand 在 EasyTier 转发上完成 Noise NK 和设备认证，安装入站 handler 后发送 `direct.ready`。brain 安装 handler 并发出确认，两端才启用直连出站。
+1. hand 从已认证的 relay 发送 `direct.offer`，带上本机 IPv4 网卡网段。brain 为该代生成临时网络名、密钥和虚拟网段，连同入口端口和路由探测端口通过该加密连接返回。两端各自采用本机配置的会合 URL。
+2. hand 先经 UDP 转发向 brain 的探测端口发本代网络名，收到应答后才连 TCP 转发。brain 的回环入口只接收和 relay 相同的设备身份。hand 在 EasyTier 转发上完成 Noise NK 和设备认证，安装入站 handler 后发送 `direct.ready`。brain 安装 handler 并发出确认，两端才启用直连出站。
 3. 应用端口和授权仍跟随原 relay 的生命周期。链路切换不会替换端口或移动在途操作。断掉的时间线流可以从已接收的游标续订；业务请求和工具不自动重发。工具的新建流在插件日志记录 `Remote hand tool.call transport=direct` 或 `transport=relay`，日志不包含调用参数。
 4. POSIX 上实例目录为 `0700`，启动配置文件为 `0600`。网络秘密不在命令行、插件日志或持久设置中。正常关闭及启动失败会回收进程和文件；宿主被强杀时，操作系统不保证运行清理回调。
 
-实例只启用 no-tun 和指定端口的固定转发。Hand 拒绝所有新入站；brain 只接收对端虚拟 IP 发往直连入口的 TCP。两端都拒绝转发其他入站流量。管理 RPC 服务在 v2.6.4 总会创建，因此显式绑定回环，并使用不匹配回环客户端地址的白名单。见 [no-tun 入口取舍与源码](../.agents/notes/2026-11-24-easytier-no-tun-boundary.md)。
+实例只启用 no-tun 和指定端口的固定转发。Hand 拒绝所有新入站；brain 只接收对端虚拟 IP 发往直连入口的 TCP 和发往探测端口的 UDP。探测应答只回本代网络名。两端都拒绝转发其他入站流量。管理 RPC 服务在 v2.6.4 总会创建，因此显式绑定回环，并使用不匹配回环客户端地址的白名单。
+
+虚拟网段从 RFC 5737 的 TEST-NET-2/3（`198.51.100.0/24`、`203.0.113.0/24`）切出的 /30 中选，brain 取第一个与两端网卡网段都不重叠的。这两段只用于文档，不与常见 LAN、Docker、CGNAT/Tailscale、链路本地和 Clash/Surge fake-ip 段重叠；EasyTier 会拒绝远端地址落在本机虚拟网段内的隧道，重叠时会合或局域网直连会失败。v2.6.4 的 TCP 转发在本机还没有对端路由时会用系统网络直接连目的虚拟 IP，UDP 转发没有这条回落，所以先用 UDP 探测确认路由就绪。见 [no-tun 入口取舍与源码](../.agents/notes/2026-11-24-easytier-no-tun-boundary.md)。
 
 ## 建议的会合节点配置
 

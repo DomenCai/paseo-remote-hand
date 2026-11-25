@@ -11,7 +11,9 @@ import { BrainService } from "../brain.ts";
 import { digest, newDeviceKey } from "../identity.ts";
 import { StateStore } from "../state.ts";
 import { ensureEasyTier } from "./easytier-binary.ts";
-import { easyTierConfig, localTcpPort, newDirectNetwork, runEasyTier, startEasyTier } from "./easytier.ts";
+import {
+  easyTierConfig, listenProbe, localTcpPort, newDirectNetwork, probeBrain, runEasyTier, startEasyTier,
+} from "./easytier.ts";
 import { connectDirect, listenDirect } from "./transport.ts";
 
 const localhost = "127.0.0.1";
@@ -112,12 +114,21 @@ async function eventually<T>(action: () => Promise<T | false>, label: string, ti
   assert.fail(`Timed out: ${label}`);
 }
 
+test("direct subnet avoids both ends' interface ranges", () => {
+  const hand = ["198.51.100.7/32", "10.0.0.5/8", "192.168.1.20/24"];
+  const brain = ["198.51.100.0/25", "203.0.113.2/30"];
+  const { subnet } = newDirectNetwork([...hand, ...brain]);
+  assert.equal(subnet, "198.51.100.128/30");
+  assert.equal(newDirectNetwork(["198.51.100.0/24"]).subnet, "203.0.113.0/30");
+  assert.throws(() => newDirectNetwork(["198.51.100.0/24", "203.0.113.9/24"]), /No free EasyTier direct subnet/);
+});
+
 test("EasyTier rejects an altered archive and stays disabled with no peers", async (t) => {
   const directory = await fixture(t);
   const invalid = path.join(directory, "not-the-release.zip");
   await writeFile(invalid, "not the release");
   const signal = new AbortController().signal;
-  assert.equal(await startEasyTier({ role: "hand", network: newDirectNetwork(), brainPort: 1, stateDir: directory, signal }), undefined);
+  assert.equal(await startEasyTier({ role: "hand", network: newDirectNetwork([]), brainPort: 1, probePort: 1, stateDir: directory, signal }), undefined);
   await assert.rejects(ensureEasyTier(directory, { signal, archivePath: invalid }), /archive SHA-256 verification failed/);
 });
 
@@ -148,34 +159,37 @@ test("EasyTier loopback: Noise NK, M0 device auth, bidirectional ACL block and c
   const brainPeer = await localTcpPort();
   const handPeer = await localTcpPort();
   const toBrain = await localTcpPort();
+  const toProbe = await udpPort();
   const blockBrainTcp = await localTcpPort();
   const blockHandTcp = await localTcpPort();
   const blockBrainUdp = await udpPort();
   const blockHandUdp = await udpPort();
 
   async function startPair(inboundAllowAll: boolean) {
-    const network = newDirectNetwork();
+    const network = newDirectNetwork([]);
     const signal = new AbortController();
     const instanceInstall = { ...install, signal: AbortSignal.any([install.signal, signal.signal]) };
-    const render = (role: "hand" | "brain", forwards: Parameters<typeof easyTierConfig>[1]) => {
+    const probePort = await listenProbe(network, instanceInstall.signal);
+    const run = (role: "hand" | "brain", forwards: Parameters<typeof runEasyTier>[2]) => {
       const [self, other] = role === "hand" ? [handPeer, brainPeer] : [brainPeer, handPeer];
       const config = easyTierConfig({
-        network, role, brainPort: direct.port, stunServers: [],
+        network, role, brainPort: direct.port, probePort, stunServers: [],
         listeners: [`tcp://127.0.0.1:${self}`], peers: [`tcp://127.0.0.1:${other}`],
       }, forwards);
       // 仅测试用的正对照：同一拓扑、同一目标和探针，解除两端的入站默认拒绝。
-      return inboundAllowAll ? config.replace("default_action = 2", "default_action = 1") : config;
+      return runEasyTier(instanceInstall, inboundAllowAll ? config.replace("default_action = 2", "default_action = 1") : config, forwards);
     };
     const results = await Promise.allSettled([
-      runEasyTier(instanceInstall, render("brain", [
+      run("brain", [
         { protocol: "tcp", bindPort: blockHandTcp, destinationPort: handTcp.port },
         { protocol: "udp", bindPort: blockHandUdp, destinationPort: handUdp.port },
-      ]), [blockHandTcp, blockHandUdp]),
-      runEasyTier(instanceInstall, render("hand", [
+      ]),
+      run("hand", [
         { protocol: "tcp", bindPort: toBrain, destinationPort: direct.port },
+        { protocol: "udp", bindPort: toProbe, destinationPort: probePort },
         { protocol: "tcp", bindPort: blockBrainTcp, destinationPort: brainTcp.port },
         { protocol: "udp", bindPort: blockBrainUdp, destinationPort: brainUdp.port },
-      ]), [toBrain, blockBrainTcp, blockBrainUdp]),
+      ]),
     ]);
     const close = async () => {
       signal.abort();
@@ -186,7 +200,7 @@ test("EasyTier loopback: Noise NK, M0 device auth, bidirectional ACL block and c
       await close();
       throw result.reason;
     }
-    return { close };
+    return { close, network };
   }
 
   const probes = [
@@ -197,6 +211,7 @@ test("EasyTier loopback: Noise NK, M0 device auth, bidirectional ACL block and c
   ];
   const control = await startPair(true);
   try {
+    await probeBrain(toProbe, control.network, AbortSignal.any([lifetime.signal, AbortSignal.timeout(20_000)]));
     await Promise.all(probes.map(async ({ title, send, server }) => {
       await eventually(send, `positive control ${title}`);
       assert.ok(server.hits() > 0, title);
@@ -206,6 +221,8 @@ test("EasyTier loopback: Noise NK, M0 device auth, bidirectional ACL block and c
     await control.close();
   }
   const protectedPair = await startPair(false);
+  // 与 hand 会话相同：先等 UDP 探测应答，再连 TCP 转发，避免 EasyTier 回落到系统网络。
+  await probeBrain(toProbe, protectedPair.network, AbortSignal.any([lifetime.signal, AbortSignal.timeout(20_000)]));
   const activePeer = await eventually(async () => {
     const attempt = new AbortController();
     const timer = setTimeout(() => attempt.abort(), 1500);
