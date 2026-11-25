@@ -9,7 +9,7 @@
     "node": ">=20.19.0"
   },
   "scripts": {
-    "test": "node --test server/*.test.ts server/hand-tools/*.test.ts",
+    "test": "node --test server/*.test.ts server/hand-tools/*.test.ts server/provider/*.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json",
     "test:direct": "node --test server/direct/*.test.ts"
   },
@@ -17,6 +17,7 @@
     "@getpaseo/client": "0.17.3",
     "@getpaseo/protocol": "0.17.3",
     "@getpaseo/relay": "0.17.3",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "picomatch": "^4.0.7",
     "re2js": "^2.10.0",
     "ws": "^8.23.0",

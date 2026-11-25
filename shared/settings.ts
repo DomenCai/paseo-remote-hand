@@ -68,6 +68,7 @@ export const EndpointSchema = z.object({
   fingerprint: nonEmptyString,
   // 收到 relay 的首次同步后才算 connected。
   status: z.enum(["connecting", "connected", "disconnected"]),
+  lastError: z.string().optional(),
   risks: z.array(RiskSchema),
 });
 
@@ -126,6 +127,12 @@ export const brains = {
     input: brainIdentity.extend({ policy: BrainPolicySchema }),
     output: noOutput,
   }),
+  // 保留 brain 公钥和本机设备身份，仅替换 relay 并重连。
+  setRelay: defineRpc({
+    name: "brains.set-relay",
+    input: brainIdentity.extend({ relay: RelayAddressSchema }),
+    output: noOutput,
+  }),
   revokeProject: defineRpc({
     name: "brains.revoke-project",
     input: brainIdentity.extend({ root: nonEmptyString }),
@@ -141,6 +148,7 @@ export const brains = {
 
 export const endpoint = {
   get: defineRpc({ name: "endpoint.get", input: emptyInput, output: EndpointSchema }),
+  watch: defineSubscription({ name: "endpoint.watch", input: emptyInput, event: EndpointSchema }),
   setRelay: defineRpc({
     name: "endpoint.set-relay",
     input: z.object({ relay: RelayAddressSchema }),

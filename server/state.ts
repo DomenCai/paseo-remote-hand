@@ -34,10 +34,14 @@ const StateSchema = z.object({
 type State = z.infer<typeof StateSchema>;
 export type StoredBrain = State["brains"][string];
 
-export function pluginStateDir(): string {
+export function resolvePaseoHome(): string {
   const raw = process.env.PASEO_HOME ?? "~/.paseo";
   const home = raw === "~" ? homedir() : raw.startsWith("~/") ? join(homedir(), raw.slice(2)) : raw;
-  return resolve(home, "plugin-data", "remote-hand");
+  return resolve(home);
+}
+
+export function pluginStateDir(paseoHome = resolvePaseoHome()): string {
+  return join(paseoHome, "plugin-data", "remote-hand");
 }
 
 export class StateStore {

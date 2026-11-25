@@ -8,14 +8,19 @@ export class Snapshots<T> {
     this.#read = read;
   }
 
+  subscribe(listener: () => void): () => void {
+    this.#watchers.add(listener);
+    return () => { this.#watchers.delete(listener); };
+  }
+
   watch({ push, signal }: PluginSubscriptionContext<T>): void {
     if (signal.aborted) return;
     const remove = () => {
-      this.#watchers.delete(publish);
+      unsubscribe();
       signal.removeEventListener("abort", remove);
     };
     const publish = () => { void push(this.#read()).catch(remove); };
-    this.#watchers.add(publish);
+    const unsubscribe = this.subscribe(publish);
     signal.addEventListener("abort", remove, { once: true });
     publish();
   }

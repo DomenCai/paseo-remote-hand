@@ -11,7 +11,8 @@
   },
   "files": [
     "index.server.ts",
+    "server/direct/direct.test.ts",
     "server/identity.test.ts",
-    "server/direct/direct.test.ts"
+    "server/protocol.test.ts"
   ]
 }
