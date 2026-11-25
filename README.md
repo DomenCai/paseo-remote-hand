@@ -6,14 +6,15 @@ Remote hand 是 Paseo 插件。**hand** 是保存项目的本机，**brain** 是
 
 ## 安装
 
-两端都安装 Paseo 0.17.3 并启用插件。brain 需要能在 Paseo 内运行所选 provider。插件会为自己的会话注入 MCP；无需开启 daemon 的 MCP 注入或 Claude 的 Paseo Tools。在插件目录执行：
+两端都安装 Paseo 0.17.x（≥0.17.3）并启用插件。brain 需要能在 Paseo 内运行所选 provider。插件会为自己的会话注入 MCP；无需开启 daemon 的 MCP 注入或 Claude 的 Paseo Tools。在两台机器上分别执行：
 
 ```sh
-npm ci --omit=dev --ignore-scripts
-paseo plugin install "$PWD"
+paseo plugin install git:DomenCai/paseo-remote-hand
 ```
 
-也可用 `paseo plugin install 'git:<owner>/<repo>'`，再用 `paseo plugin ls remote-hand --json` 找到安装目录的 `path`。开发时改动服务端后执行 `paseo plugin reload remote-hand`。
+Paseo 会克隆仓库并执行 `npm ci --omit=dev --ignore-scripts`。安装后在 Paseo 设置里打开"远端机器"（hand）或"已连接设备"（brain）页面。用 `paseo plugin ls remote-hand --json` 可找到安装目录的 `path`，`dev/*.mjs` 脚本需在该目录运行。
+
+开发时也可从本地目录安装：在插件目录执行 `npm ci --omit=dev --ignore-scripts` 后运行 `paseo plugin install "$PWD"`；改动服务端后执行 `paseo plugin reload remote-hand`。
 
 ## 配对与撤销
 
