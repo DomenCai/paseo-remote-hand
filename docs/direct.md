@@ -65,41 +65,95 @@ npm run test:direct
 
 虚拟网段从 RFC 5737 的 TEST-NET-2/3（`198.51.100.0/24`、`203.0.113.0/24`）切出的 /30 中选，brain 取第一个与两端网卡网段都不重叠的。这两段只用于文档，不与常见 LAN、Docker、CGNAT/Tailscale、链路本地和 Clash/Surge fake-ip 段重叠；EasyTier 会拒绝远端地址落在本机虚拟网段内的隧道，重叠时会合或局域网直连会失败。v2.6.4 的 TCP 转发在本机还没有对端路由时会用系统网络直接连目的虚拟 IP，UDP 转发没有这条回落，所以先用 UDP 探测确认路由就绪。见 [no-tun 入口取舍与源码](../.agents/notes/2026-11-24-easytier-no-tun-boundary.md)。
 
-## 建议的会合节点配置
+## 自建会合节点
 
-会合节点使用独立的网络名和密钥，不与插件的临时网络共享。配置只添加明确要监听的 TCP/UDP 端口，不配置虚拟出口、子网代理或端口转发。将公开地址填为两端的 peer URL，可填多个，例如 `udp://meet.example.com:11010`、`tcp://meet.example.com:11010`。管理 RPC 保持回环，并限制客户端。用主机防火墙和服务资源限制约束公开的会合流量。
+插件不提供公共会合节点。想用直连时，在一台有公网 IP 的 Linux 服务器上自己部署一个 EasyTier 节点作为会合节点，再把它的地址填到两端。会合节点只帮两端打洞，关闭数据中继后不转发业务流量，最低配置的 VPS 就够用。
 
-例如，运维人员可为单个会合节点准备以下私有文件，把网络名和密钥替换成节点自己的随机值：
+### 一键部署
 
-```toml
-instance_name = "remote-hand-rendezvous"
-listeners = ["udp://0.0.0.0:11010", "tcp://0.0.0.0:11010"]
-
-[network_identity]
-network_name = "<operator-network-name>"
-network_secret = "<operator-network-secret>"
-
-[flags]
-no_tun = true
-private_mode = false
-disable_upnp = true
-relay_network_whitelist = ""
-relay_all_peer_rpc = true
-disable_relay_data = true
-```
-
-用已校验的二进制启动：
+在服务器上以 root 运行 [deploy/rendezvous.sh](../deploy/rendezvous.sh)：
 
 ```sh
-/path/to/easytier-core --config-file /path/to/rendezvous.toml \
-  --disable-env-parsing --no-tun --relay-network-whitelist --relay-all-peer-rpc \
-  --rpc-portal 127.0.0.1:15888 --rpc-portal-whitelist 192.0.2.1/32 \
-  --console-log-level warn --file-log-level off
+curl -fsSL https://raw.githubusercontent.com/DomenCai/paseo-remote-hand/main/deploy/rendezvous.sh | sudo bash
 ```
 
-空白名单不同于省略，省略默认为 `"*"`；`disable_relay_data` 在 v2.6.4 通过 TOML 设置。保持客户端 `p2p_only = true`，因此没有直连时业务走已有的 Paseo relay。
+脚本适用于 x86_64 和 arm64 的 systemd 发行版，会完成下面手动步骤里的所有事：下载并校验 EasyTier、生成随机的网络名和密钥、创建专用用户和 systemd 服务，并在 ufw 或 firewalld 开启时放行端口。完成后打印要填到两端的两个会合节点地址。
 
-上游 [foreign_network_manager.rs:949](https://github.com/EasyTier/EasyTier/blob/v2.6.4/easytier/src/peers/foreign_network_manager.rs#L949-L985) 在开启 `relay_all_peer_rpc` 时允许空白名单以外的网络建立会合连接，但按白名单结果保存 data relay 权限。[转发路径](https://github.com/EasyTier/EasyTier/blob/v2.6.4/easytier/src/peers/foreign_network_manager.rs#L535-L552) 在 data 未获准或禁用时直接丢弃。[客户端代理发送路径](https://github.com/EasyTier/EasyTier/blob/v2.6.4/easytier/src/peers/peer_manager.rs#L1451-L1464) 还会检查目的 peer 是否直接相连。这是 v2.6.4 的源码依据，尚未在公网部署或测流量计数。
+- 默认端口 `11010`，可用 `sudo PORT=12345 bash rendezvous.sh` 修改，只在首次生成配置时生效。
+- 重复运行会跳过已校验的程序并保留已有配置，可用来升级或修复服务。
+- 云厂商的安全组仍需自己放行该端口的 TCP 和 UDP。
+- 卸载：`sudo bash rendezvous.sh --uninstall`，会删除服务、程序、配置和专用用户，防火墙规则保留。
+
+### 手动部署
+
+会合节点使用独立的网络名和密钥，不与插件的临时网络共享。配置只添加明确要监听的 TCP/UDP 端口，不配置虚拟出口、子网代理或端口转发。管理 RPC 保持回环，并限制客户端。用主机防火墙和服务资源限制约束公开的会合流量。
+
+1. 在服务器防火墙和云厂商安全组里放行 `11010` 的 **TCP 和 UDP**。
+2. 下载与插件相同版本的 [EasyTier v2.6.4](https://github.com/EasyTier/EasyTier/releases/tag/v2.6.4)，x86_64 服务器用 `easytier-linux-x86_64-v2.6.4.zip`，ARM 服务器用 `easytier-linux-aarch64-v2.6.4.zip`。SHA-256 与 [`server/direct/easytier-release.ts`](../server/direct/easytier-release.ts) 里的固定值核对一致后，解出 `easytier-core`，例如放到 `/opt/remote-hand-rendezvous/`。
+3. 用 `openssl rand -hex 16` 生成两个随机值，作为节点自己的网络名和密钥，写进私有配置文件，例如 `/etc/remote-hand-rendezvous/rendezvous.toml`（权限 `600`）：
+
+   ```toml
+   instance_name = "remote-hand-rendezvous"
+   listeners = ["udp://0.0.0.0:11010", "tcp://0.0.0.0:11010"]
+
+   [network_identity]
+   network_name = "<operator-network-name>"
+   network_secret = "<operator-network-secret>"
+
+   [flags]
+   no_tun = true
+   private_mode = false
+   disable_upnp = true
+   relay_network_whitelist = ""
+   relay_all_peer_rpc = true
+   disable_relay_data = true
+   ```
+
+4. 用已校验的二进制启动。可以先直接运行下面的命令测试：
+
+   ```sh
+   /opt/remote-hand-rendezvous/easytier-core --config-file /etc/remote-hand-rendezvous/rendezvous.toml \
+     --disable-env-parsing --no-tun --relay-network-whitelist --relay-all-peer-rpc \
+     --rpc-portal 127.0.0.1:15888 --rpc-portal-whitelist 192.0.2.1/32 \
+     --console-log-level warn --file-log-level off
+   ```
+
+   `--rpc-portal-whitelist 192.0.2.1/32` 是故意写成匹配不到任何来源的文档网段，用来拒绝所有管理 RPC 访问。照抄即可，不要改成服务器 IP 或 `127.0.0.1`。
+
+   长期运行建议用 systemd 托管。保存为下面的服务文件，`ExecStart` 填上面的完整命令：
+
+   ```ini
+   # /etc/systemd/system/remote-hand-rendezvous.service
+   [Unit]
+   Description=Remote hand rendezvous (EasyTier)
+   After=network-online.target
+   Wants=network-online.target
+
+   [Service]
+   User=easytier-rv
+   ExecStart=<上面的完整命令>
+   Restart=always
+   RestartSec=5
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+   创建专用的无登录用户，收紧配置文件权限，然后启动服务：
+
+   ```sh
+   sudo useradd --system --no-create-home --shell /usr/sbin/nologin easytier-rv
+   sudo chown easytier-rv /etc/remote-hand-rendezvous/rendezvous.toml
+   sudo chmod 600 /etc/remote-hand-rendezvous/rendezvous.toml
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now remote-hand-rendezvous
+   ```
+
+5. 在两端的「直连加速（实验性）」里添加 `udp://<服务器公网地址>:11010` 和 `tcp://<服务器公网地址>:11010`，或在插件目录运行 `direct.set`（见本文开头）。会合节点地址只填在自己的机器上，不要写进公开文档或截图。
+
+空白名单不同于省略，省略默认为 `"*"`；`disable_relay_data` 在 v2.6.4 通过 TOML 设置。插件启动客户端 EasyTier 时已固定设置 `p2p_only = true`，无需手动配置，因此打不通直连时业务仍走已有的 Paseo relay。
+
+上游 [foreign_network_manager.rs:949](https://github.com/EasyTier/EasyTier/blob/v2.6.4/easytier/src/peers/foreign_network_manager.rs#L949-L985) 在开启 `relay_all_peer_rpc` 时允许空白名单以外的网络建立会合连接，但按白名单结果保存 data relay 权限。[转发路径](https://github.com/EasyTier/EasyTier/blob/v2.6.4/easytier/src/peers/foreign_network_manager.rs#L535-L552) 在 data 未获准或禁用时直接丢弃。[客户端代理发送路径](https://github.com/EasyTier/EasyTier/blob/v2.6.4/easytier/src/peers/peer_manager.rs#L1451-L1464) 还会检查目的 peer 是否直接相连。这是 v2.6.4 的源码依据。按本节配置在公网 VPS 上实测跨 NAT 直连：约 25 秒建立直连，业务流量走两端 UDP，同期到会合节点的连接只增加 72 字节。
 
 ## macOS 实测
 
