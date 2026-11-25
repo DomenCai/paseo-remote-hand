@@ -7,6 +7,7 @@ import {
 import { brainFingerprint, DeviceIdSchema, newDeviceKey, parsePairCode, requestChallenge, resume, signDevice } from "./identity.ts";
 import { handDirect } from "./direct/session.ts";
 import { SelectedPort } from "./direct/selected-port.ts";
+import { sameCanonicalPath } from "./hand-tools/paths.ts";
 import { ProtocolError, validate } from "./frames.ts";
 import type { ConnectionPort, Peer } from "./protocol.ts";
 import { remoteRequest } from "./remote-agent-stream.ts";
@@ -141,11 +142,20 @@ export class HandService {
       { mode: "restricted", projects: brain.projects.map(({ root }) => root) };
   }
 
-  authorizeProject(brainId: string, root: string): void {
-    const brain = this.#brain(brainId);
-    if (brain.revoked) throw new ProtocolError("revoked");
-    if (brain.projects.some((project) => project.root === root)) return;
-    this.#update(brainId, (record) => { record.projects.push({ root, grantedAt: new Date().toISOString() }); });
+  async authorizeProject(brainId: string, root: string): Promise<void> {
+    for (;;) {
+      const brain = this.#brain(brainId);
+      if (brain.revoked) throw new ProtocolError("revoked");
+      if (brain.projects.some((project) => project.root === root)) return;
+      if (process.platform === "win32" && brain.projects.length) {
+        const aliases = await Promise.all(brain.projects.map((project) => sameCanonicalPath(project.root, root)));
+        // 检查文件 ID 时可能恰好撤销设备或目录，写入前重新读取这份授权。
+        if (this.#brain(brainId) !== brain) continue;
+        if (aliases.some(Boolean)) return;
+      }
+      this.#update(brainId, (record) => { record.projects.push({ root, grantedAt: new Date().toISOString() }); });
+      return;
+    }
   }
 
   async #loadModels(brainId: string, slot: Slot, port: ConnectionPort): Promise<void> {

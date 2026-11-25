@@ -6,11 +6,13 @@
     "strict": true,
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
+    "allowJs": true,
     "resolveJsonModule": true,
     "noEmit": true
   },
   "files": [
     "index.server.ts",
+    "server/daemon-location.test.ts",
     "server/direct/direct.test.ts",
     "server/direct-routing.test.ts",
     "server/identity.test.ts",

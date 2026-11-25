@@ -2,11 +2,12 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { access, brains, devices, direct, endpoint } from "./shared/settings.ts";
 import { BrainService } from "./server/brain.ts";
 import { createBrainAgentService } from "./server/brain/index.ts";
+import { resolvePaseoHome } from "./server/daemon-location.mjs";
 import { HandService } from "./server/hand.ts";
 import { createLocalDaemon } from "./server/local-daemon.ts";
 import { createHandProvider } from "./server/provider/index.ts";
 import { Snapshots } from "./server/snapshots.ts";
-import { pluginStateDir, resolvePaseoHome, StateStore } from "./server/state.ts";
+import { pluginStateDir, StateStore } from "./server/state.ts";
 
 export default function contribute(server: PluginServerContext) {
   const paseoHome = resolvePaseoHome();
@@ -26,7 +27,7 @@ export default function contribute(server: PluginServerContext) {
     listBrains: () => hand.brains().map(({ brainId, name }) => ({ id: brainId, name, port: hand.port(brainId) })),
     subscribe: (listener) => hand.snapshots.subscribe(listener),
     readPolicy: async (brainId) => hand.readPolicy(brainId),
-    authorizeProject: async (brainId, cwd) => hand.authorizeProject(brainId, cwd),
+    authorizeProject: (brainId, cwd) => hand.authorizeProject(brainId, cwd),
   });
   const unregisterHook = agents.registerHook(server);
   server.registerProvider(provider.registration);

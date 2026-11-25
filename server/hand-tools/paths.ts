@@ -18,7 +18,8 @@ export function absolutePath(value: string, platform = process.platform): string
   const drive = /^[a-z]:\\/i.exec(input);
   const unc = /^\\\\([^\\]+)\\([^\\]+)(?:\\|$)/.exec(input);
   const components = (drive ? input.slice(3) : input).split("\\").filter(Boolean);
-  if ((!drive && !unc) || components.some((part) => part !== "." && part !== ".." && (
+  const ordinaryShare = unc && !/^\.{1,2}$/.test(unc[1]) && !/^(?:\.{1,2}|pipe|mailslot|ipc\$)$/i.test(unc[2]);
+  if ((!drive && !ordinaryShare) || components.some((part) => part !== "." && part !== ".." && (
     /[:*?"<>|\x00-\x1f]|[ .]$/.test(part) ||
     /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(part)
   ))) {
@@ -27,10 +28,30 @@ export function absolutePath(value: string, platform = process.platform): string
   return input;
 }
 
-function isInside(root: string, target: string): boolean {
-  const relative = path.relative(root, target);
-  return relative === "" ||
-    (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`));
+const fileIdentity = (file: string) => stat(file, { bigint: true });
+type ReadIdentity = (file: string) => Promise<{ dev: bigint; ino: bigint }>;
+
+export async function sameCanonicalPath(left: string, right: string, platform = process.platform, identity: ReadIdentity = fileIdentity) {
+  if (left === right) return true;
+  if (platform !== "win32" || left.toLowerCase() !== right.toLowerCase()) return false;
+  // 大小写只用于找候选；同名异大小写的目录可以是两份独立的 Windows 文件。
+  try {
+    const [a, b] = await Promise.all([identity(left), identity(right)]);
+    return a.ino !== 0n && a.dev === b.dev && a.ino === b.ino;
+  } catch (error) {
+    if (hasCode(error, "ENOENT", "ENOTDIR")) return false;
+    throw error;
+  }
+}
+
+export async function withinCanonicalRoot(root: string, target: string, platform = process.platform, identity: ReadIdentity = fileIdentity) {
+  const paths = platform === "win32" ? win32 : path.posix;
+  const relative = paths.relative(root, target);
+  if (paths.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${paths.sep}`)) return false;
+  if (platform !== "win32") return true;
+  let ancestor = target;
+  for (const _ of relative.split(paths.sep).filter(Boolean)) ancestor = paths.dirname(ancestor);
+  return sameCanonicalPath(root, ancestor, platform, identity);
 }
 
 export class HandPaths {
@@ -69,7 +90,9 @@ export class HandPaths {
       this.canonicalRoots ??= Promise.all(this.roots.map(async (root) => {
         try {
           const canonical = await realpath(root);
-          return (await stat(canonical)).isDirectory() ? canonical : undefined;
+          // 授权保存的是当时的真实目录；后来换成 junction 或链接不会授权其新目标。
+          if (!(await lstat(root)).isDirectory() || !await sameCanonicalPath(root, canonical)) return undefined;
+          return canonical;
         } catch (error) {
           if (!hasCode(error, "ENOENT", "ENOTDIR")) throw error;
         }
@@ -77,19 +100,7 @@ export class HandPaths {
       const roots = await this.canonicalRoots;
       for (const root of roots) {
         // 只比较已存在的祖先；未解析的后缀不能用来跨入授权范围。
-        if (!isInside(root, target)) continue;
-        if (process.platform === "win32") {
-          // win32.relative 忽略大小写，但 Windows 可以对单个目录开启大小写区分。
-          let ancestor = target;
-          for (const _ of path.relative(root, target).split(path.sep).filter(Boolean)) {
-            ancestor = path.dirname(ancestor);
-          }
-          if (ancestor !== root) {
-            const [left, right] = await Promise.all([stat(ancestor, { bigint: true }), stat(root, { bigint: true })]);
-            if (left.ino === 0n || left.ino !== right.ino || left.dev !== right.dev) continue;
-          }
-        }
-        return path.join(target, ...missing);
+        if (await withinCanonicalRoot(root, target)) return path.join(target, ...missing);
       }
       throw new Error(`Path is outside the authorized roots: ${input}`);
     }

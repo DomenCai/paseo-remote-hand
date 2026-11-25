@@ -74,6 +74,8 @@ function fakePaseo(extraProviders: CatalogEntry[] = [], providerBases: Record<st
   function record(cwd: string, opts: PaseoWorkspaceAgentCreateOptions, launch?: PluginSessionOpenRequest) {
     const id = opts.agentId!;
     const provider = opts.config.provider.split("/")[0];
+    let metadata = opts.metadata;
+    let staleTimelineSnapshot = false;
     const listeners = new Set<(event: PaseoAgentTimelineEvent) => void>();
     const epoch = "timeline-epoch";
     const rows: Array<{ item: Item; turnId?: string; seqStart: number; seqEnd: number; timestamp: string }> = [];
@@ -104,7 +106,7 @@ function fakePaseo(extraProviders: CatalogEntry[] = [], providerBases: Record<st
     }
     function snapshot(): State {
       return {
-        id, cwd, provider, metadata: opts.metadata, pendingPermissions: pending, status: active ? "running" : "idle",
+        id, cwd, provider, metadata, pendingPermissions: pending, status: active ? "running" : "idle",
         lastUserMessageAt: rows.findLast(({ item }) => item.type === "user_message")?.timestamp ?? null,
         activeTurn: active ? { turnId: active, startedAt: null } : null,
       } as State;
@@ -113,6 +115,9 @@ function fakePaseo(extraProviders: CatalogEntry[] = [], providerBases: Record<st
       id,
       refresh: async () => ({ agent: snapshot(), project: null }),
       current: snapshot,
+      async setMetadata(patch: Parameters<PaseoAgentHandle["setMetadata"]>[0]) {
+        metadata = { ...metadata, ...patch };
+      },
       async send(text: string, options: { messageId: string }) {
         active = `turn-${++turns}`;
         emit({ type: "turn_started", provider, turnId: active });
@@ -135,7 +140,8 @@ function fakePaseo(extraProviders: CatalogEntry[] = [], providerBases: Record<st
           const tail = options?.direction === "tail";
           const entries = tail ? remaining.slice(-limit) : remaining.slice(0, limit);
           return {
-            entries, epoch, error: null, reset: false, window: { maxSeq: sequence },
+            entries, agent: staleTimelineSnapshot ? { ...snapshot(), metadata: opts.metadata, lastUserMessageAt: null } : snapshot(),
+            epoch, error: null, reset: false, window: { maxSeq: sequence },
             endCursor: entries.length ? { epoch, seq: tail ? sequence : Math.max(...entries.map(({ seqEnd }) => seqEnd)) } : null,
             hasNewer: !tail && remaining.length > entries.length,
           };
@@ -145,6 +151,7 @@ function fakePaseo(extraProviders: CatalogEntry[] = [], providerBases: Record<st
 
     return {
       opts, handle, launch, row, finish, pendingTool, listeners,
+      useStaleTimelineSnapshot(value: boolean) { staleTimelineSnapshot = value; },
       requestPermission() {
         const request = {
           id: "permission-1", provider, name: "AskUserQuestion", kind: "question" as const,
@@ -454,7 +461,7 @@ test("brain ↔ hand loopback: prompts, hand tools, permissions, stop, reconnect
 test("brain ↔ hand loopback: ACP prefixes only the first prompt and uses authenticated stdio MCP", { timeout: 10_000 }, async (t) => {
   const dir = await realpath(await mkdtemp(path.join(tmpdir(), "remote-agent-acp-test-")));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const cwd = path.join(dir, "hand");
+  const cwd = path.join(dir, "hand 🧪");
   await mkdir(cwd);
   const file = path.join(cwd, "local.txt");
   await writeFile(file, "read from the hand over stdio MCP");
@@ -510,9 +517,10 @@ test("brain ↔ hand loopback: ACP prefixes only the first prompt and uses authe
   await assert.rejects(pair.hand.request("agent.create", create), /not available/);
 
   const sessionId = "local-acp";
-  await connection.send({ type: "session.open", requestId: "open", sessionId, history: "skip", config: {
+  const config: ProviderSessionConfig = {
     cwd, model: "mini/acp-future/test", mode: catalog.catalog.defaultMode, env: {}, mcpServers: {}, settings: {}, persist: true,
-  } });
+  };
+  await connection.send({ type: "session.open", requestId: "open", sessionId, history: "skip", config });
   await eventually(() => events.some((event) => event.type === "session.ready" && event.sessionId === sessionId), JSON.stringify(events));
   const opened = events.find((event) => event.type === "session.opened" && event.sessionId === sessionId)!;
   const { agentId, modeId } = opened.persistence!.data as { agentId: string; modeId?: string };
@@ -528,15 +536,26 @@ test("brain ↔ hand loopback: ACP prefixes only the first prompt and uses authe
   t.after(() => client.close());
   await client.connect(new StdioClientTransport(mcp));
 
+  const original = "User request:\nread the file";
+  // 模拟 Paseo 先读 agent 快照、后读包含新用户消息的时间线页。
+  agent.useStaleTimelineSnapshot(true);
   await connection.send({ type: "session.prompt", sessionId, prompt: {
-    clientMessageId: "first", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "read the file" }] },
+    clientMessageId: "first", delivery: "auto", input: { type: "message", content: [{ type: "text", text: original }] },
   } });
   const first = (await agent.handle.timeline.refetch({ direction: "tail", limit: 1 })).entries[0].item;
   assert.ok(first.type === "user_message");
   assert.ok(first.text.includes(JSON.stringify(cwd)));
   assert.match(first.text, /\bhand_read\b/);
   assert.doesNotMatch(first.text, /mcp__/);
-  assert.match(first.text, /User request:\nread the file$/);
+  assert.ok(first.text.endsWith(`User request:\n${original}`));
+  async function userText(session: string, messageId: string) {
+    const event = await eventually(() => events.find((event) => event.type === "timeline.item" &&
+      event.sessionId === session && event.item.type === "user_message" && event.item.clientMessageId === messageId),
+    `user message ${messageId} in ${session}`);
+    return event.item.text;
+  }
+  assert.equal(await userText(sessionId, "first"), original);
+  agent.useStaleTimelineSnapshot(false);
   const result = await client.callTool({ name: "hand_read", arguments: { path: file } });
   assert.notEqual(result.isError, true);
   const [content] = result.content as { type: string; text: string }[];
@@ -550,4 +569,11 @@ test("brain ↔ hand loopback: ACP prefixes only the first prompt and uses authe
   const next = (await agent.handle.timeline.refetch({ direction: "tail", limit: 1 })).entries[0].item;
   assert.ok(next.type === "user_message");
   assert.equal(next.text, "follow up");
+  assert.equal(await userText(sessionId, "next"), next.text);
+
+  await connection.send({ type: "session.close", sessionId, requestId: "close" });
+  await connection.send({ type: "session.open", requestId: "restore", sessionId: "replay-acp", history: "replay", config,
+    persistence: opened.persistence });
+  assert.equal(await userText("replay-acp", "first"), original);
+  assert.equal(await userText("replay-acp", "next"), next.text);
 });

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, open, readFile, readdir, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test, type TestContext } from "node:test";
 import { executeHandTool, type HandToolOptions } from "./index.ts";
-import { absolutePath, hasCode } from "./paths.ts";
+import { absolutePath, hasCode, sameCanonicalPath, withinCanonicalRoot } from "./paths.ts";
 import { shellCommands } from "./shell.ts";
 
 async function fixture(t: TestContext) {
@@ -52,6 +52,9 @@ test("rejects root-prefix, parent, dangling link and symlink/junction escapes", 
   assert.deepEqual(grep.structured?.matches, []);
   assert.match((await executeHandTool("hand_read", { path: "secret.txt" }, options)).text, /absolute path/);
   assert.equal((await executeHandTool("hand_read", { path: outside }, { ...options, roots: null })).isError, false);
+  await rename(root, `${root}-original`);
+  await symlink(sibling, root, process.platform === "win32" ? "junction" : "dir");
+  assert.match((await executeHandTool("hand_read", { path: path.join(root, "secret.txt") }, options)).text, /outside the authorized roots/);
 });
 
 test("reads line slices and file hashes; binary content stays out of the text", async (t) => {
@@ -176,14 +179,39 @@ test("glob orders by mtime and grep agrees with and without rg", async (t) => {
 test("validates Windows drive and UNC paths and picks Windows shell arguments without a Windows host", () => {
   assert.equal(absolutePath("C:/Work Space/a.txt", "win32"), "C:\\Work Space\\a.txt");
   assert.equal(absolutePath("\\\\server\\share\\dir", "win32"), "\\\\server\\share\\dir");
-  for (const invalid of ["C:relative", "\\current-drive", "\\\\?\\C:\\device", "C:\\repo\\file.txt:stream", "C:\\repo\\NUL.txt"]) {
+  for (const invalid of [
+    "C:relative", "\\current-drive", "\\\\?\\C:\\device", "\\\\.\\pipe\\x", "\\\\server\\PIPE\\x",
+    "\\\\server\\..\\share", "C:\\repo\\file.txt:stream", "C:\\repo\\NUL.txt",
+  ]) {
     assert.throws(() => absolutePath(invalid, "win32"), /absolute|fully qualified/);
   }
   const fallback = shellCommands('Write-Output "Hello world"', undefined, "win32");
   assert.deepEqual(fallback.map((item) => item.executable), ["pwsh.exe", "powershell.exe"]);
+  assert.ok(fallback.every((item) => item.args.includes("-NoProfile")));
   assert.match(Buffer.from(fallback[0].args.at(-1)!, "base64").toString("utf16le"), /Write-Output "Hello world"/);
   const git = shellCommands("echo hi", { kind: "git-bash", path: "C:/Program Files/Git/bin/bash.exe" }, "win32");
   assert.deepEqual(git, [{ executable: "C:\\Program Files\\Git\\bin\\bash.exe", args: ["-l", "-c", "echo hi"] }]);
+});
+
+test("Windows workspace aliases and root checks require the same volume and file ID", async () => {
+  const root = "C:\\Work Space";
+  const alias = "c:\\work space";
+  const different = "C:\\WORK SPACE";
+  const identities = new Map([
+    [root, { dev: 1n, ino: 10n }], [alias, { dev: 1n, ino: 10n }], [different, { dev: 1n, ino: 11n }],
+  ]);
+  const identity = async (file: string) => {
+    const value = identities.get(file);
+    assert.ok(value, `unexpected file ID lookup: ${file}`);
+    return value;
+  };
+  assert.equal(await sameCanonicalPath(root, alias, "win32", identity), true);
+  assert.equal(await sameCanonicalPath(root, different, "win32", identity), false);
+  assert.equal(await withinCanonicalRoot(root, `${alias}\\dir\\file.txt`, "win32", identity), true);
+  assert.equal(await withinCanonicalRoot(root, `${different}\\file.txt`, "win32", identity), false);
+  assert.equal(await withinCanonicalRoot(root, `${root}-other\\file.txt`, "win32", identity), false);
+  assert.equal(await withinCanonicalRoot(root, "D:\\Work Space\\file.txt", "win32", identity), false);
+  assert.equal(await withinCanonicalRoot("\\\\nas\\share", "\\\\nas\\share-other\\file.txt", "win32", identity), false);
 });
 
 test("bash checks permission, merges output, returns exit code and caps both streamed and final output", { skip: process.platform === "win32" }, async (t) => {

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { directReadyMethod } from "./direct/session.ts";
 import { BrainService } from "./brain.ts";
-import { brainFingerprint, INVITE_TTL_MS, newDeviceKey, parsePairCode, signDevice } from "./identity.ts";
+import { brainFingerprint, INVITE_TTL_MS, newDeviceKey, parsePairCode, randomToken, signDevice, verifyDevice } from "./identity.ts";
 import { Peer, PROTOCOL_VERSION } from "./protocol.ts";
 import { StateStore } from "./state.ts";
 
@@ -47,6 +47,23 @@ function setup(t: TestContext) {
   };
   return { brain, connect, nonce, fingerprint, invite, pair, advance: (ms: number) => { now += ms; } };
 }
+
+test("hand 重新读取本机状态后可以用同一个设备身份签署重连请求", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "remote-hand-identity-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new StateStore(dir);
+  const { relay, serverId, publicKeyB64 } = store.current.endpoint;
+  const fingerprint = brainFingerprint(publicKeyB64);
+  const key = newDeviceKey();
+  store.update((state) => {
+    state.brains[fingerprint] = { relay, serverId, publicKeyB64, key, name: "Loopback", os: "darwin", projects: [], policy: "restricted", revoked: false };
+  });
+  const restored = new StateStore(dir).current.brains[fingerprint].key;
+  const nonce = randomToken();
+  const proof = signDevice(restored, fingerprint, nonce);
+  assert.equal(proof.publicKey, key.publicKey);
+  assert.ok(verifyDevice(proof, fingerprint, nonce));
+});
 
 test("预览不消费邀请；两个连接并发配对时只有一个能消费", async (t) => {
   const { brain, connect, invite, pair } = setup(t);

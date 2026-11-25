@@ -16,7 +16,7 @@ export function shellCommands(command: string, shell?: HandShell, platform = pro
   if (platform === "win32" && !shell) {
     // EncodedCommand 让两种 PowerShell 都按原样接收脚本；保留最后一个原生命令的非零退出码。
     const script = `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)\n$OutputEncoding = [Console]::OutputEncoding\n$global:LASTEXITCODE = 0\n${command}\nif ($?) { exit 0 } elseif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } else { exit 1 }`;
-    const args = ["-NoLogo", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")];
+    const args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")];
     return [{ executable: "pwsh.exe", args }, { executable: "powershell.exe", args }];
   }
   if (shell && shell.kind !== (platform === "win32" ? "git-bash" : "posix")) {

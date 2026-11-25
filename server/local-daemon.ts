@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createPaseoApi } from "@getpaseo/client";
-import { createHostClient, parseHostTarget } from "@getpaseo/client/node";
+import { createHostClient } from "@getpaseo/client/node";
+import { localDaemonAddress } from "./daemon-location.mjs";
 
 export function createLocalDaemon(home: string) {
   let client: ReturnType<typeof createHostClient> | undefined;
@@ -12,18 +13,7 @@ export function createLocalDaemon(home: string) {
   async function connect() {
     if (stopped) throw new Error("Remote hand plugin has stopped.");
     const read = (name: string) => readFileSync(join(home, name), "utf8").trim();
-    const { listen } = JSON.parse(read("paseo.pid")) as { listen: string };
-    const target = parseHostTarget(listen);
-    if (target.kind !== "socket" || target.offer) throw new Error("Expected the local Paseo daemon.");
-    let address = listen;
-    if (!target.socketPath) {
-      const url = new URL(target.url);
-      if (url.hostname === "0.0.0.0") url.hostname = "127.0.0.1";
-      if (url.hostname === "[::]") url.hostname = "[::1]";
-      if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))
-        throw new Error("Remote hand needs a loopback or local socket to contact the daemon.");
-      address = url.href;
-    }
+    const address = localDaemonAddress(JSON.parse(read("paseo.pid")).listen);
     const serverId = read("server-id");
     const connection = client = createHostClient(address, {
       clientId: `remote-hand-brain-${randomUUID()}`, clientType: "cli",
