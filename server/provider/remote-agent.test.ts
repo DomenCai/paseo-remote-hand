@@ -150,7 +150,7 @@ function fakePaseo(extraProviders: CatalogEntry[] = [], providerBases: Record<st
     } as unknown as PaseoAgentHandle;
 
     return {
-      opts, handle, launch, row, finish, pendingTool, listeners,
+      opts, handle, launch, row, finish, pendingTool, listeners, snapshot,
       useStaleTimelineSnapshot(value: boolean) { staleTimelineSnapshot = value; },
       requestPermission() {
         const request = {
@@ -207,7 +207,15 @@ function fakePaseo(extraProviders: CatalogEntry[] = [], providerBases: Record<st
         };
       },
     },
-    agents: { ref(id: string) { return records.get(id)?.handle ?? { refresh: async () => null }; } },
+    agents: {
+      ref(id: string) { return records.get(id)?.handle ?? { refresh: async () => null }; },
+      async list(options?: { filter?: { statuses?: string[] } }) {
+        const statuses = options?.filter?.statuses;
+        const entries = [...records.values()].map((record) => ({ agent: record.snapshot() }))
+          .filter(({ agent }) => !statuses || statuses.includes(agent.status));
+        return { entries, pageInfo: { hasMore: false, nextCursor: null, prevCursor: null } };
+      },
+    },
   } as unknown as PaseoApi;
 
   return {
@@ -268,7 +276,7 @@ test("brain ↔ hand loopback: prompts, hand tools, permissions, stop, reconnect
   t.after(service.registerHook(fake.hook));
   t.after(service.close);
 
-  const access = { providers: ["claude-sub", "remote-hand"] };
+  const access = { providers: ["claude-sub", "remote-hand"], allowDeviceModes: false, maxConcurrentPerDevice: 1 };
   let pair = loopback();
   const attach = () => service.attach({ deviceId: "device-1", paseo: fake.api, access, port: pair.brain });
   attach();
@@ -483,7 +491,7 @@ test("brain ↔ hand loopback: ACP prefixes only the first prompt and uses authe
   const service = createBrainAgentService({ paseoHome: path.join(dir, "brain"), async cancelAgent() {} });
   t.after(service.registerHook(fake.hook));
   t.after(service.close);
-  const access = { providers: [] as string[] };
+  const access = { providers: [] as string[], allowDeviceModes: false, maxConcurrentPerDevice: 1 };
   const pair = loopback();
   service.attach({ deviceId: "device-1", paseo: fake.api, access, port: pair.brain });
   const hand = createHandProvider({
@@ -503,16 +511,24 @@ test("brain ↔ hand loopback: ACP prefixes only the first prompt and uses authe
     "Mac mini · Claude · Sonnet 5.5", "Mac mini · Custom ACP · Test ACP", "Mac mini · Codex · GPT-6.2",
   ]);
   assert.equal(catalog.catalog.defaultMode, "remote-hand:brain-default");
-  assert.deepEqual(catalog.catalog.modes.map(({ id }) => id), ["remote-hand:brain-default", "default", "auto", "full-access"]);
+  // 未开放 mode 选择时，每个 provider 只提供 brain 的默认 mode。
+  assert.deepEqual(catalog.catalog.modes.map(({ id }) => id), ["remote-hand:brain-default", "default", "auto"]);
 
   const create = { provider: "codex-sub", model: "gpt-6.2", handCwd: cwd, handPlatform: process.platform };
-  for (const requested of [undefined, "auto"]) {
-    const reply = await pair.hand.request("agent.create", toRemoteJson({ ...create, modeId: requested })) as { agentId: string; modeId: string };
+  async function createWith(modeId?: string) {
+    const reply = await pair.hand.request("agent.create", toRemoteJson({ ...create, modeId })) as { agentId: string; modeId: string };
     const agent = fake.records.get(reply.agentId)!;
-    assert.equal(agent.opts.config.modeId, requested ?? "full-access");
     assert.equal(reply.modeId, agent.opts.config.modeId);
     assert.match(agent.opts.config.systemPrompt ?? "", /\bhand_read\b/);
+    return agent.opts.config.modeId;
   }
+  assert.equal(await createWith(), "auto");
+  assert.equal(await createWith("auto"), "auto");
+  await assert.rejects(pair.hand.request("agent.create", { ...create, modeId: "full-access" }), /only lets paired devices use its default mode/);
+  access.allowDeviceModes = true;
+  assert.equal(await createWith("full-access"), "full-access");
+  assert.equal(await createWith(), "auto");
+  await assert.rejects(pair.hand.request("agent.create", { ...create, modeId: "unknown" }), /not available on this brain/);
   access.providers = ["acp-future"];
   await assert.rejects(pair.hand.request("agent.create", create), /not available/);
 
@@ -575,4 +591,46 @@ test("brain ↔ hand loopback: ACP prefixes only the first prompt and uses authe
     persistence: opened.persistence });
   assert.equal(await userText("replay-acp", "first"), original);
   assert.equal(await userText("replay-acp", "next"), next.text);
+});
+
+test("brain limits running sessions per device, including simultaneous requests", { timeout: 10_000 }, async (t) => {
+  const dir = await realpath(await mkdtemp(path.join(tmpdir(), "remote-agent-limit-test-")));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const fake = fakePaseo();
+  const service = createBrainAgentService({ paseoHome: path.join(dir, "brain"), async cancelAgent() {} });
+  t.after(service.registerHook(fake.hook));
+  t.after(service.close);
+  const access = { providers: [] as string[], allowDeviceModes: false, maxConcurrentPerDevice: 1 };
+  const devices = ["device-1", "device-2"].map((deviceId) => {
+    const pair = loopback();
+    t.after(pair.disconnect);
+    service.attach({ deviceId, paseo: fake.api, access, port: pair.brain });
+    return pair.hand;
+  });
+  const [hand, other] = devices;
+  const create = (port: RemoteAgentPort) => port.request("agent.create", toRemoteJson({
+    provider: "claude-sub", model: "claude/sonnet", handCwd: dir, handPlatform: process.platform,
+  })) as Promise<{ agentId: string }>;
+  const prompt = (port: RemoteAgentPort, agentId: string, id: string) =>
+    port.request("agent.prompt", { agentId, clientMessageId: id, text: id });
+
+  // 空闲会话不占名额。
+  const [a, b] = await Promise.all([create(hand), create(hand)]);
+  const results = await Promise.allSettled([prompt(hand, a.agentId, "a"), prompt(hand, b.agentId, "b")]);
+  assert.equal(results.filter(({ status }) => status === "fulfilled").length, 1);
+  const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected")!;
+  assert.match(String(rejected.reason), /already has 1 running session/);
+  const running = results[0].status === "fulfilled" ? a : b;
+  const idle = running === a ? b : a;
+
+  await assert.rejects(create(hand), /already has 1 running session/);
+  // 给运行中的会话追加消息不受限制；其他设备有自己的名额。
+  await prompt(hand, running.agentId, "follow-up");
+  const foreign = await create(other);
+  await prompt(other, foreign.agentId, "foreign");
+
+  fake.records.get(running.agentId)!.finish("completed");
+  await prompt(hand, idle.agentId, "after");
+  access.maxConcurrentPerDevice = 2;
+  await prompt(hand, running.agentId, "second slot");
 });

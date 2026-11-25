@@ -86,6 +86,10 @@ export const DeviceSchema = z.object({
 export const AccessSchema = z.object({
   // 空数组表示允许所有 provider。
   providers: z.array(nonEmptyString),
+  // 关闭时设备只能用 brain 为各 provider 配置的默认 mode；开启后设备可选 provider 提供的任意 mode。
+  // 旧状态文件没有这个字段，按关闭处理。
+  allowDeviceModes: z.boolean().default(false),
+  // 每台设备同时处于启动或运行中的会话数上限。
   maxConcurrentPerDevice: z.int().positive(),
 });
 

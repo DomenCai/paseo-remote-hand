@@ -146,6 +146,8 @@ brain 只能把 Paseo 里**已经能用**的模型提供出去。先在 brain �
 
 在「已连接设备」标签往下滚，找到「访问控制」，默认开启「允许全部 provider」。只想开放部分模型时，关掉它，勾选要开放的 provider，再点「保存访问控制」右侧的「保存」。
 
+同一区块还有两项：「允许设备选择权限模式」默认关闭，设备只能用本机为各 provider 设置的默认模式；「每台设备同时运行的会话上限」默认 1，空闲会话不计入。
+
 ---
 
 ## 第三步：在 hand 上添加远端机器
@@ -192,7 +194,7 @@ brain 只能把 Paseo 里**已经能用**的模型提供出去。先在 brain �
 
 在 hand 上打开一个项目 workspace，新建 agent。点输入框下方的模型按钮，在列表里找到 **Remote Hand**，展开后选一个模型。模型名的格式是「brain 名 · provider · 模型」，例如「1234.Mini · Codex · GPT-6.2-Sol」。
 
-旁边的模式保持「Use brain default」即可，由 brain 按所选 provider 决定。
+旁边的模式保持「Use brain default」即可，使用 brain 为该 provider 设置的默认模式。
 
 ![模型列表里的 Remote Hand](images/install/14-pick-model.png)
 

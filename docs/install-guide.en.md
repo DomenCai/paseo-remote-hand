@@ -148,6 +148,8 @@ The dialog shows a code starting with `rh1.`, with the remaining time below it o
 
 On the **Connected devices** tab, scroll down to **Access control**. **Allow all providers** is on by default. To offer only some models, turn it off, check the providers you want to offer, and click **Save** next to **Save access control**.
 
+The same section has two more settings. **Let devices choose permission modes** is off by default, so devices can only use this machine's default mode for each provider. **Max running sessions per device** defaults to 1; idle sessions don't count.
+
 ---
 
 ## Step 3: Add the remote machine on the hand
@@ -194,7 +196,7 @@ Back on the brain's **Connected devices** tab, the hand also appears in the devi
 
 On the hand, open a project workspace and create a new agent. Click the model button below the input box, find **Remote Hand** in the list, expand it, and pick a model. Model names look like "brain name · provider · model", for example "1234.Mini · Codex · GPT-6.2-Sol".
 
-Leave the mode next to it at **Use brain default**, so the brain picks it based on the provider.
+Leave the mode next to it at **Use brain default** to use the default mode the brain has for that provider.
 
 ![Remote Hand in the model list](images/install/14-pick-model.png)
 

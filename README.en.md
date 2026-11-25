@@ -81,7 +81,7 @@ node dev/rpc.mjs brains.set-relay '{"brainId":"<brainId>","relay":"relay.example
 
    `--new-workspace local` creates a new workspace for the given directory. Without it, Paseo may reuse the current agent's or terminal's workspace.
 
-   Omit `--mode`, or pick **Use brain default** in the app, to let the brain choose the mode for the selected provider. When creating a session, the app's mode list merges the options offered by each brain; if you pick one manually, use a mode the target provider supports. Cursor's hand tools still ask for approval.
+   Omit `--mode`, or pick **Use brain default** in the app, to use the default mode the brain has for the selected provider. On the brain, **Connected devices** → **Access control** → **Let devices choose permission modes** is off by default: each provider then offers only its default mode, and requests for any other mode are rejected. Turned on, devices can pick any mode the provider offers, including full access. Agents on the brain can also use the brain's own tools, so turn it on only for devices you trust. When creating a session, the app's mode list merges the options offered by each brain. Cursor's hand tools still ask for approval.
 3. Use the **hand agent ID** returned by the command to view the timeline, wait, or stop. If a permission request appears, answer it with its request ID.
 
    ```sh
@@ -119,7 +119,7 @@ The full level lets the brain use the hand tools to access any file and shell th
 
 - The brain's native tools remain available. The plugin describes the project location and the `hand_*` tools through the system prompt or the first user message, but the model may still call the brain's native tools. The tool prefix shown in the timeline depends on the selected provider. The restricted level only constrains the hand's tools.
 - Catalogs and tool output go through the relay; regular requests and stream-open parameters have a 128 KiB frame limit. If the connection drops while a write or command is running, its result may be unknown; check the project and timeline before retrying.
-- The maximum concurrency per device can be saved but isn't enforced on tasks yet at this stage. Claude has passed cross-machine acceptance testing; Codex, Antigravity, Grok, Kimi, and Pi have passed cross-machine hand file-read checks.
+- **Max running sessions per device** counts sessions that are starting or working on a turn. At the limit, the device can't create a session or prompt an idle one; prompts to a session that is already running still go through. Claude has passed cross-machine acceptance testing; Codex, Antigravity, Grok, Kimi, and Pi have passed cross-machine hand file-read checks.
 
 ## State and development
 

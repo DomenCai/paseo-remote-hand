@@ -15,7 +15,11 @@ import { errorMessage, toRemoteJson } from "../remote-agent-stream.ts";
 import { createHandMcp, handMcpName } from "./hand-mcp.ts";
 import { agentEvents, fetchPage, promptPrefixKey } from "./timeline.ts";
 
-export interface BrainAccess { providers: readonly string[] }
+export interface BrainAccess {
+  readonly providers: readonly string[];
+  readonly allowDeviceModes: boolean;
+  readonly maxConcurrentPerDevice: number;
+}
 
 const ownerKey = "remote-hand.session";
 const ownerSchema = z.strictObject({
@@ -30,11 +34,6 @@ type BrainApi = Pick<PaseoApi, "agents" | "config" | "providers" | "workspaces">
 function allowsProvider(access: BrainAccess, id: string) {
   return id !== "remote-hand" && (access.providers.length === 0 || access.providers.includes(id));
 }
-
-const preferredModes = new Map([
-  ["claude", "auto"], ["codex", "full-access"], ["antigravity", "full-access"],
-  ["kimi", "auto"], ["cursor", "agent"], ["opencode", "build"],
-]);
 
 function placement(home: string, owner: Owner) {
   const userPath = absolutePath(owner.handCwd, owner.handPlatform);
@@ -74,7 +73,12 @@ async function catalog(paseo: BrainApi, access: BrainAccess): Promise<RemoteBrai
     const modes = (modeList ?? []).map(({ id, label, description, icon, colorTier }) => ({
       id, label, description, icon, colorTier,
     }));
-    return { id: entry.provider, label: entry.label ?? entry.provider, models, modes, defaultMode: entry.defaultModeId ?? undefined };
+    // brain 配置的默认 mode。未开放 mode 选择时，设备只能看到并使用这一个。
+    const defaultMode = modes.find(({ id }) => id === entry.defaultModeId)?.id;
+    return {
+      id: entry.provider, label: entry.label ?? entry.provider, models, defaultMode,
+      modes: access.allowDeviceModes ? modes : modes.filter(({ id }) => id === defaultMode),
+    };
   }));
   return { providers: results.flatMap((result) =>
     result.status === "fulfilled" && result.value.models.length ? [result.value] : []) };
@@ -97,6 +101,21 @@ async function promptTurn(agent: PaseoAgentHandle, input: z.infer<typeof remoteA
   throw new Error("Brain accepted the prompt but could not identify its turn; do not resend automatically.");
 }
 
+// 以宿主的 agent 状态为准计数，插件重启后也不会漏算。
+async function runningSessions(paseo: BrainApi, deviceId: string, except?: string) {
+  let count = 0;
+  let cursor: string | undefined;
+  do {
+    const { entries, pageInfo } = await paseo.agents.list({
+      filter: { statuses: ["initializing", "running"] }, page: { limit: 200, cursor },
+    });
+    count += entries.filter(({ agent }) => agent.id !== except &&
+      ownerSchema.safeParse(agent.metadata?.[ownerKey]).data?.deviceId === deviceId).length;
+    cursor = pageInfo.hasMore ? pageInfo.nextCursor ?? undefined : undefined;
+  } while (cursor);
+  return count;
+}
+
 export function createBrainAgentService({ paseoHome, cancelAgent }: {
   paseoHome: string;
   cancelAgent: (agentId: string) => Promise<void>;
@@ -106,6 +125,17 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
   const acceptingPrompts = new Set<string>();
   const activeTools = new Map<string, Set<AbortController>>();
   const stopping = new Set<string>();
+  // 同一设备的建会话和发消息排队执行：上一个请求让会话进入运行后，下一个才计数，
+  // 所以同时到达的请求不会一起越过并发上限。
+  const deviceQueues = new Map<string, Promise<void>>();
+
+  function queued<T>(deviceId: string, task: () => Promise<T>): Promise<T> {
+    const run = (deviceQueues.get(deviceId) ?? Promise.resolve()).then(task);
+    const tail = run.then(() => {}, () => {});
+    deviceQueues.set(deviceId, tail);
+    void tail.then(() => { if (deviceQueues.get(deviceId) === tail) deviceQueues.delete(deviceId); });
+    return run;
+  }
 
   const mcp = createHandMcp(async ({ agentId, deviceId }, name, input, signal): Promise<HandToolResult> => {
     const link = links.get(deviceId);
@@ -172,6 +202,12 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
 
     const getPaseo = () => typeof paseo === "function" ? paseo() : paseo;
 
+    async function checkConcurrency(api: BrainApi, except?: string) {
+      const max = access.maxConcurrentPerDevice;
+      if (await runningSessions(api, deviceId, except) >= max)
+        throw new Error(`This device already has ${max} running session(s) on this brain, the most it allows. Wait for one to finish.`);
+    }
+
     async function owned(agentId: string, callSignal: AbortSignal) {
       callSignal.throwIfAborted();
       const agent = (await getPaseo()).agents.ref(agentId);
@@ -197,20 +233,26 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
 
     try {
       handle("agent.catalog", async () => catalog(await getPaseo(), access));
-      handle("agent.create", async (input, callSignal) => {
+      handle("agent.create", (input, callSignal) => queued(deviceId, async () => {
+        callSignal.throwIfAborted();
         const paseo = await getPaseo();
         const provider = (await catalog(paseo, access)).providers.find(({ id }) => id === input.provider);
         if (!provider || !provider.models.some(({ id }) => id === input.model)) throw new Error("The requested provider and model are not available to this device.");
+        // 目录已按 allowDeviceModes 过滤；不在其中的 mode 一律拒绝，不替设备改选。
+        if (input.modeId !== undefined && !provider.modes.some(({ id }) => id === input.modeId)) {
+          throw new Error(access.allowDeviceModes
+            ? "The requested mode is not available on this brain."
+            : "This brain only lets paired devices use its default mode.");
+        }
+        await checkConcurrency(paseo);
         const { config } = await paseo.config.get();
         const base = config.providers[input.provider]?.extends;
         const family = typeof base === "string" ? base : input.provider;
         // 0.17.3 的通用 ACP 不发送 system prompt；内置 Cursor 和 Copilot 也走该实现。
         // Antigravity 的专用插件不属于这一路径，它通过 ACP 扩展发送追加指令。
         const promptPrefix = family === "acp" || family === "cursor" || family === "copilot";
-        const preferredMode = preferredModes.get(input.provider) ?? preferredModes.get(family);
-        // 空 mode 列表表示让 provider 自己决定，例如 Grok 和 Pi。
-        const modeId = input.modeId ?? [preferredMode, provider.defaultMode].find((id) =>
-          provider.modes.some((mode) => mode.id === id));
+        // 没有默认 mode 时省略，让 provider 自己决定，例如 Grok 和 Pi。
+        const modeId = input.modeId ?? provider.defaultMode;
         const owner = ownerSchema.parse({
           deviceId, handCwd: input.handCwd, handPlatform: input.handPlatform,
           ...(family !== "claude" && { delivery: promptPrefix ? "stdio-prompt" : "stdio-system" }),
@@ -230,7 +272,7 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
           },
         });
         return { agentId: agent.id, modeId };
-      });
+      }));
       handle("agent.prompt", async (input, callSignal) => {
         const { agentId } = input;
         const promptKey = JSON.stringify([deviceId, agentId]);
@@ -239,13 +281,17 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
         try {
           const { agent, state, owner } = await owned(agentId, callSignal);
           if (!allowsProvider(access, state.provider)) throw new Error("This brain provider is no longer allowed.");
-          if (owner.delivery === "stdio-prompt" && !state.lastUserMessageAt) {
-            const prefix = `${projectContext(owner.handCwd, owner.handPlatform)}\n${toolInstructions}\n\nUser request:\n`;
-            // 先持久化边界，再让带前缀的消息进入时间线。只保存标识和长度，不复制用户正文。
-            await agent.setMetadata({ [promptPrefixKey]: { clientMessageId: input.clientMessageId, length: prefix.length } });
-            input = { ...input, text: prefix + input.text };
-          }
-          return await promptTurn(agent, input, callSignal);
+          return await queued(deviceId, async () => {
+            // 已在运行的会话追加消息不占新名额，所以计数时排除它自己。
+            await checkConcurrency(await getPaseo(), agentId);
+            if (owner.delivery === "stdio-prompt" && !state.lastUserMessageAt) {
+              const prefix = `${projectContext(owner.handCwd, owner.handPlatform)}\n${toolInstructions}\n\nUser request:\n`;
+              // 先持久化边界，再让带前缀的消息进入时间线。只保存标识和长度，不复制用户正文。
+              await agent.setMetadata({ [promptPrefixKey]: { clientMessageId: input.clientMessageId, length: prefix.length } });
+              input = { ...input, text: prefix + input.text };
+            }
+            return promptTurn(agent, input, callSignal);
+          });
         } finally {
           acceptingPrompts.delete(promptKey);
         }

@@ -210,8 +210,11 @@ export const messages = defineTranslations({
         customProviderAdd: "Add",
         providersSelectionRequired:
           "Select at least one provider, or turn on \"Allow all providers\".",
-        maxConcurrentLabel: "Max concurrent sessions per device",
-        maxConcurrentHint: "Must be a positive whole number.",
+        allowDeviceModesLabel: "Let devices choose permission modes",
+        allowDeviceModesHint:
+          "Off: paired devices always use this machine's default mode for each provider. On: they can pick any mode the provider offers, including full access. Agents also keep this machine's own tools.",
+        maxConcurrentLabel: "Max running sessions per device",
+        maxConcurrentHint: "Sessions starting or working on a turn count toward the limit. Idle sessions do not.",
         maxConcurrentInvalid: "Enter a positive whole number (at least 1).",
         saveAccess: "Save access control",
         accessSaved: "Access control updated",
@@ -465,8 +468,11 @@ export const messages = defineTranslations({
         customProviderPlaceholder: "例如：claude 或 claude-sub",
         customProviderAdd: "添加",
         providersSelectionRequired: "请至少选择一个 provider，或开启“允许全部 provider”。",
-        maxConcurrentLabel: "每台设备的并发上限",
-        maxConcurrentHint: "必须为正整数。",
+        allowDeviceModesLabel: "允许设备选择权限模式",
+        allowDeviceModesHint:
+          "关闭时，已连接设备只能使用本机为各 provider 设置的默认模式；开启后可选 provider 提供的任意模式，包括完全访问。agent 也能使用本机自带的工具。",
+        maxConcurrentLabel: "每台设备同时运行的会话上限",
+        maxConcurrentHint: "正在启动或执行任务的会话计入上限，空闲会话不计入。",
         maxConcurrentInvalid: "请输入大于等于 1 的整数。",
         saveAccess: "保存访问控制",
         accessSaved: "已保存访问控制",

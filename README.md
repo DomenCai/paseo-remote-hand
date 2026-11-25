@@ -81,7 +81,7 @@ node dev/rpc.mjs brains.set-relay '{"brainId":"<brainId>","relay":"relay.example
 
    加 `--new-workspace local` 会按指定目录新建 workspace。省略这个选项时，Paseo 可能沿用当前 agent 或终端的 workspace。
 
-   省略 `--mode`，或在 App 里选择 **Use brain default**，由 brain 根据所选 provider 决定 mode。新建会话时，App 的 mode 列表合并各个 brain 提供的选项；手动选择时，请使用目标 provider 支持的 mode。Cursor 的 hand 工具仍会请求审批。
+   省略 `--mode`，或在 App 里选择 **Use brain default**，使用 brain 为该 provider 设置的默认 mode。brain 的「已连接设备」→「访问控制」默认关闭「允许设备选择权限模式」，此时每个 provider 只提供默认 mode，指定其他 mode 会被拒绝；开启后设备可选 provider 提供的任意 mode，包括完全访问。agent 在 brain 上也能用 brain 自带的工具，只对信任的设备开启。新建会话时，App 的 mode 列表合并各个 brain 提供的选项。Cursor 的 hand 工具仍会请求审批。
 3. 用命令返回的 **hand agent ID** 查看时间线、等待或停止；如果出现权限请求，用对应请求 ID 应答。
 
    ```sh
@@ -119,7 +119,7 @@ node dev/rpc.mjs brains.set-policy '{"brainId":"<brainId>","policy":"full"}'
 
 - Brain 的原生工具仍可用。插件通过系统提示或首条用户消息说明项目位置和 `hand_*` 工具；模型可能仍调用 brain 的原生工具。时间线里的工具前缀由所选 provider 决定。受限档约束的是 hand 的工具。
 - 目录和工具输出走 relay；普通请求和开流参数有 128 KiB 帧上限。断线时正在执行的写入或命令可能结果未知，先核对项目和时间线再重试。
-- 最大设备并发数目前可保存，在这一阶段尚不限制任务。Claude 已通过跨机验收；Codex、Antigravity、Grok、Kimi、Pi 已通过跨机 hand 文件读取验证。
+- 「每台设备同时运行的会话上限」只计正在启动或执行任务的会话。达到上限时，该设备新建会话或给空闲会话发消息会被拒绝；给正在运行的会话追加消息不受影响。Claude 已通过跨机验收；Codex、Antigravity、Grok、Kimi、Pi 已通过跨机 hand 文件读取验证。
 
 ## 状态与开发
 

@@ -66,7 +66,7 @@ export class StateStore {
           publicKeyB64: exportPublicKey(keys.publicKey), secretKeyB64: exportSecretKey(keys.secretKey),
         },
         devices: {}, invites: {}, brains: {}, direct: structuredClone(DEFAULT_DIRECT),
-        access: { providers: [], maxConcurrentPerDevice: 1 },
+        access: { providers: [], allowDeviceModes: false, maxConcurrentPerDevice: 1 },
       };
       this.#save(this.#state);
     }

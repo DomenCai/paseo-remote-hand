@@ -178,7 +178,7 @@ export function ConnectedDevicesScreen({ theme, layout, host }: PluginSurfacePro
     }
   }, [revokeDevice, revokeTarget, t, toast]);
 
-  // 3. 访问控制（允许的 provider + 每台设备的并发上限）
+  // 3. 访问控制（允许的 provider、设备能否选择 mode、每台设备的并发上限）
   const accessQueryKey = useMemo(() => ["remote-hand", host.id, "access"] as const, [host.id]);
   const accessQuery = useQuery({
     queryKey: accessQueryKey,
@@ -193,6 +193,7 @@ export function ConnectedDevicesScreen({ theme, layout, host }: PluginSurfacePro
   const maxConcurrentInputRef = useRef<SettingsInputHandle>(null);
   const [allowAllProviders, setAllowAllProviders] = useState(true);
   const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
+  const [allowDeviceModes, setAllowDeviceModes] = useState(false);
   const [customProviderDraft, setCustomProviderDraft] = useState("");
   const [maxConcurrentDraft, setMaxConcurrentDraft] = useState("1");
   const [accessDirty, setAccessDirty] = useState(false);
@@ -203,6 +204,7 @@ export function ConnectedDevicesScreen({ theme, layout, host }: PluginSurfacePro
     if (!accessQuery.data || accessDirty) return;
     setAllowAllProviders(accessQuery.data.providers.length === 0);
     setSelectedProviders(accessQuery.data.providers);
+    setAllowDeviceModes(accessQuery.data.allowDeviceModes);
     const nextMax = String(accessQuery.data.maxConcurrentPerDevice);
     setMaxConcurrentDraft(nextMax);
     maxConcurrentInputRef.current?.replaceText(nextMax);
@@ -260,6 +262,7 @@ export function ConnectedDevicesScreen({ theme, layout, host }: PluginSurfacePro
     }
     const parsed = AccessSchema.safeParse({
       providers: providersToSave,
+      allowDeviceModes,
       maxConcurrentPerDevice: Number(trimmedMax),
     });
     if (!parsed.success) {
@@ -284,6 +287,7 @@ export function ConnectedDevicesScreen({ theme, layout, host }: PluginSurfacePro
   }, [
     accessQueryKey,
     allowAllProviders,
+    allowDeviceModes,
     maxConcurrentDraft,
     queryClient,
     selectedProviders,
@@ -297,9 +301,10 @@ export function ConnectedDevicesScreen({ theme, layout, host }: PluginSurfacePro
     const targetProviders = allowAllProviders ? [] : selectedProviders;
     return (
       !sameStringSet(targetProviders, accessQuery.data.providers) ||
+      allowDeviceModes !== accessQuery.data.allowDeviceModes ||
       maxConcurrentDraft.trim() !== String(accessQuery.data.maxConcurrentPerDevice)
     );
-  }, [accessDirty, accessQuery.data, allowAllProviders, maxConcurrentDraft, selectedProviders]);
+  }, [accessDirty, accessQuery.data, allowAllProviders, allowDeviceModes, maxConcurrentDraft, selectedProviders]);
 
   const relayHasChanges = endpointRelay
     ? relayDraft.trim() !== endpointRelay
@@ -727,6 +732,18 @@ export function ConnectedDevicesScreen({ theme, layout, host }: PluginSurfacePro
               </View>
             </View>
           ) : null}
+
+          <SettingsSwitch
+            label={t("connectedDevices.allowDeviceModesLabel")}
+            hint={t("connectedDevices.allowDeviceModesHint")}
+            value={allowDeviceModes}
+            disabled={savingAccess || accessQuery.isPending}
+            onValueChange={(next) => {
+              setAccessDirty(true);
+              setAccessError(null);
+              setAllowDeviceModes(next);
+            }}
+          />
 
           <SettingsInput
             ref={maxConcurrentInputRef}
