@@ -167,8 +167,11 @@ async function localUdpPort(): Promise<number> {
   return assigned;
 }
 
-/** brain 侧：只对本代网络名作应答。ACL 只放行对端虚拟 IP 到这个 UDP 端口。 */
-export async function listenProbe(network: DirectNetwork, signal: AbortSignal): Promise<number> {
+/**
+ * brain 侧：只对本代网络名作应答。ACL 只放行对端虚拟 IP 到这个 UDP 端口。
+ * 应答器出错时关闭并调用 failed，由调用方结束本代 EasyTier，避免 ACL 放行的端口被别的 socket 复用。
+ */
+export async function listenProbe(network: DirectNetwork, signal: AbortSignal, failed: () => void): Promise<number> {
   const token = Buffer.from(network.name);
   const socket = createSocket("udp4");
   let open = true;
@@ -185,8 +188,10 @@ export async function listenProbe(network: DirectNetwork, signal: AbortSignal): 
   try {
     socket.bind(0, loopback);
     await once(socket, "listening", { signal });
-    // 应答失败时关闭；hand 收不到应答，按协商超时回落 relay。
-    socket.on("error", close);
+    socket.on("error", () => {
+      close();
+      failed();
+    });
     return socket.address().port;
   } catch (error) {
     close();

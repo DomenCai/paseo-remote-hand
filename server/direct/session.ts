@@ -32,7 +32,7 @@ const installMs = 15 * 60_000;
 const offerMs = installMs + 10_000;
 const noLocalPeers = "No rendezvous peers are configured on this machine.";
 const remoteOff = "Direct connection is off on the remote machine, or it has no rendezvous peers.";
-const remoteUnsupported = "The remote machine does not support direct connections.";
+const remoteUnsupported = "The remote machine does not support this direct connection version; update remote-hand on both machines.";
 // 平台不支持和文件校验失败重试也不会成功；其余失败（打洞、协商、下载、进程退出）都按临时性处理。
 const permanentError = /^EasyTier (SHA-256 verification failed|archive |v?2\.6\.4 is unsupported)|^Invalid EasyTier cache/;
 const retryDelays = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
@@ -58,7 +58,8 @@ function safeError(error: unknown): string {
   if (/^EasyTier (download failed|SHA-256 verification failed|archive |did not become ready|exited before becoming ready|v?2\.6\.4 is unsupported)/.test(message))
     return message.slice(0, 240);
   if (error instanceof Error && error.name === "TimeoutError") return "EasyTier setup timed out.";
-  if (message === "Invalid EasyTier cache file." || message === "Invalid EasyTier cache directory.") return message;
+  // 没有可用网段是临时性的：网卡变化后可恢复，保留原因便于排查。
+  if (["Invalid EasyTier cache file.", "Invalid EasyTier cache directory.", "No free EasyTier direct subnet."].includes(message)) return message;
   return unavailable;
 }
 
@@ -95,16 +96,18 @@ export function brainDirect({
     if (!enabled(config)) return { kind: "off" };
     const attempt = current = { id, stop: new AbortController() };
     const signal = AbortSignal.any([port.signal, incoming, attempt.stop.signal]);
-    const timer = setTimeout(() => {
-      if (current !== attempt) return;
-      end();
-      status(unavailable);
-    }, 2 * installMs + 35_000).unref();
+    // 回复 offer 前由本机安装时限和 hand 的 offer 超时（取消 incoming）收尾；回复后见下方计时器。
+    let timer: NodeJS.Timeout | undefined;
     signal.addEventListener("abort", () => {
       clearTimeout(timer);
       if (current === attempt) current = undefined;
     }, { once: true });
     let chosen: Peer | undefined;
+    const ended = () => {
+      if (current !== attempt) return;
+      end();
+      status(stopped);
+    };
     status();
     try {
       const network = newDirectNetwork([...handSubnets, ...localSubnets()]);
@@ -127,19 +130,21 @@ export function brainDirect({
           status(stopped);
         });
       }, signal);
-      const probePort = await listenProbe(network, signal);
+      // 探测应答器异常时结束本代，端口授权随 EasyTier 一起失效。
+      const probePort = await listenProbe(network, signal, ended);
       const instance = await startEasyTier({
         role: "brain", network, brainPort: listener.port, probePort, peers: config.peers, ...topology, stateDir, signal,
         setupSignal: AbortSignal.any([signal, AbortSignal.timeout(installMs)]),
       });
       if (!instance) throw new Error(unavailable);
-      const instanceEnded = () => {
+      void instance.closed.then(ended, ended);
+      signal.throwIfAborted();
+      // hand 未发 direct.ready 或 direct.stop 时回收；预算只含 hand 的安装、协商和 ready 确认。
+      timer = setTimeout(() => {
         if (current !== attempt) return;
         end();
-        status(stopped);
-      };
-      void instance.closed.then(instanceEnded, instanceEnded);
-      signal.throwIfAborted();
+        status(unavailable);
+      }, installMs + negotiateMs + 10_000).unref();
       return { kind: "ready", network, brainPort: listener.port, probePort };
     } catch (error) {
       const message = safeError(error);
@@ -200,13 +205,14 @@ export function handDirect({
       if (signal.aborted) return;
       if (result.permanent) { status("relay", result.error); return; }
       const now = Date.now();
+      drops = drops.filter((at) => now - at < flapWindowMs);
       if (result.dropped) {
         failures = 0;
-        drops = [...drops.filter((at) => now - at < flapWindowMs), now];
+        drops.push(now);
       }
-      const flapping = drops.filter((at) => now - at < flapWindowMs).length >= 3;
-      const base = flapping ? longest : delays[Math.min(failures++, delays.length - 1)];
-      const wait = Math.min(Math.round(base * (0.8 + Math.random() * 0.4)), longest);
+      // 频繁掉线直接用最长间隔；普通退避加 ±20% 抖动，不超过最长间隔。
+      const wait = drops.length >= 3 ? longest
+        : Math.min(Math.round(delays[Math.min(failures++, delays.length - 1)] * (0.8 + Math.random() * 0.4)), longest);
       status("relay", result.error, now + wait);
       const early = await pause(wait, signal);
       if (signal.aborted) return;
@@ -244,16 +250,15 @@ export function handDirect({
     let peer: Peer | undefined;
     let connected = false;
     try {
-      let raw: unknown;
+      let offer: z.infer<typeof offerSchema>;
       try {
-        raw = await relay.request(offerMethod, { id, localSubnets: localSubnets() }, offerMs, scope);
+        offer = validate(offerSchema, await relay.request(offerMethod, { id, localSubnets: localSubnets() }, offerMs, scope));
       } catch (error) {
-        // 未实现直连的旧版 brain 仍可走 relay。
+        // 未实现直连的旧版 brain 拒绝 offer，契约不同的版本返回不合当前格式的 offer；都停在版本不匹配，仍可走 relay。
         if (error instanceof ProtocolError && error.code === "invalid") return { error: remoteUnsupported, permanent: true };
         throw error;
       }
       scope.throwIfAborted();
-      const offer = validate(offerSchema, raw);
       if (offer.kind === "off") return { error: remoteOff, permanent: true };
       if (offer.kind === "error") return { error: offer.message, permanent: permanentError.test(offer.message) };
       const instance = await startEasyTier({
@@ -288,11 +293,14 @@ export function handDirect({
       route.preferDirect(direct);
       connected = true;
       status("direct");
-      // 心跳连续无响应就回落，不等 TCP 超时；直连或 EasyTier 关闭时立即结束。
+      // 心跳按发起时间计节拍，连续无响应就回落，不等 TCP 超时；直连或 EasyTier 关闭时立即结束。
+      // 只有已发出且超时才算无响应；busy 等明确回复或本机请求槽已满不计。
       const wait = AbortSignal.any([linkSignal, direct.signal]);
-      for (let misses = 0; misses < heartbeatMisses;) {
-        await delay(heartbeatMs, undefined, { signal: wait });
-        misses = await peer.request("ping", null, pingMs, wait).then(() => 0, () => misses + 1);
+      for (let misses = 0, sent = Date.now(); misses < heartbeatMisses;) {
+        await delay(Math.max(0, sent + heartbeatMs - Date.now()), undefined, { signal: wait });
+        sent = Date.now();
+        misses = await peer.request("ping", null, pingMs, wait).then(() => 0,
+          (error) => error instanceof ProtocolError && error.code === "timeout" ? misses + 1 : misses);
       }
       return { error: stopped, dropped: true };
     } catch (error) {
