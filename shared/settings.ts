@@ -126,8 +126,8 @@ export type EasyTierStatus = z.infer<typeof EasyTierStatusSchema>;
 export const easyTier = {
   // 订阅开始时和每次变化时都发送完整状态；下载进度至多每 500 ms 一次。
   watch: defineSubscription({ name: "easytier.watch", input: emptyInput, event: EasyTierStatusSchema }),
-  // path 为本机 ZIP 的绝对路径（可用 ~/ 开头）。先按固定摘要校验，通过后取代进行中的下载并安装；
-  // 缓存已就绪时不读取文件、直接成功。校验失败时进行中的下载不受影响。
+  // path 为本机 ZIP 的绝对路径（可用 ~/ 开头，Windows 不接受 UNC 网络路径）。缓存复核通过时不读取文件、直接成功；
+  // 否则先按固定摘要校验，通过后取代进行中的下载并安装，缓存损坏时替换它。校验失败时进行中的下载不受影响。
   import: defineRpc({ name: "easytier.import", input: z.object({ path: nameInput }), output: noOutput }),
 };
 

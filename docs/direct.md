@@ -23,12 +23,12 @@ node dev/rpc.mjs brains.retry-direct '{"brainId":"<brainId>"}'
 
 缓存缺失时，协商直连会触发下载：
 
-- 下载源按 `easyTierSources` 的顺序尝试：先 GitHub 官方，再镜像 `https://dl.fullai.top/easytier`，新镜像追加在后面。每个源提供 `<base>/v2.6.4/<官方 ZIP 文件名>`，加一行 base 即可生效。连接失败、20 秒没有新数据、单源超过 10 分钟、HTTP 非 200、超过 40 MiB 或摘要不符，都换下一个源；全部失败时，错误按顺序列出每个源的主机和原因，例如 `EasyTier download failed: github.com stalled; mirror.example.com HTTP 404.`。
+- 下载源按 `easyTierSources` 的顺序尝试：先 GitHub 官方，再镜像 `https://dl.fullai.top/easytier`，新镜像追加在后面。每个源提供 `<base>/v2.6.4/<官方 ZIP 文件名>`，加一行 base 即可生效。连接失败、20 秒没有新数据、单源超过 10 分钟、HTTP 非 200、超过 40 MiB 或摘要不符，都换下一个源；全部失败时，错误按顺序列出每个源的主机和原因，例如 `EasyTier download failed: github.com stalled; mirror.example.com HTTP 404.`。只要有一个源是连接、HTTP 或停滞类失败，这就是临时失败，按退避重试；每个源都拿到了内容但过大或摘要不符时，错误改为 `EasyTier archive failed verification from every source: ...`，判为永久失败，需手动导入或立即重试。非 200 响应不读正文、直接关闭；重定向只跟随 HTTP(S)，HTTPS 不会跳转到明文 HTTP。
 - DNS 结果 IPv4 优先，IPv4 不通时仍可回到 IPv6。只影响这次下载，不改进程全局的 DNS 顺序。
 - 有 `HTTPS_PROXY`/`HTTP_PROXY`（或小写形式）时经 HTTP 代理下载：HTTPS 源用 `CONNECT` 隧道，明文源用绝对 URL 转发，支持 `user:pass@` 基本认证；`NO_PROXY` 按主机名后缀跳过代理。只支持 `http://` 代理，其他协议的代理会让该源失败并写明原因。变量取自 Paseo daemon 进程的环境。
 - 同一状态目录同时只有一个安装任务，多个连接共用它。任务不随某次协商取消，由上述停滞和单源时限收尾，因此协商放弃后下载仍会完成，下次协商直接使用缓存。协商侧的安装等待上限是 15 分钟，只防止协商永远挂起。
 
-设置页的直连区块订阅 `easytier.watch`，显示组件为未安装、下载中（含进度）、已就绪或失败（含原因）。失败或下载中时，区块给出官方 ZIP 链接和路径输入框，调用 `easytier.import` 手动导入。Paseo 插件客户端 SDK 0.17.3 没有文件选择器，所以粘贴本机绝对路径，可用 `~/` 开头。导入先完整校验摘要，不符时直接拒绝，进行中的下载不受影响；校验通过后取代进行中的下载并安装，原来等待下载的协商改用导入结果。缓存已就绪时导入直接成功，不读取文件。
+设置页的直连区块订阅 `easytier.watch`，显示组件为未安装、下载中（含进度）、已就绪或失败（含原因）。失败或下载中时，区块给出官方 ZIP 链接和路径输入框，调用 `easytier.import` 手动导入。Paseo 插件客户端 SDK 0.17.3 没有文件选择器，所以粘贴本机绝对路径，可用 `~/` 开头。缓存已就绪且复核通过时导入直接成功，不读取文件。否则只按路径打开 ZIP 一次，确认是普通文件后复制到插件状态目录下的私有暂存位置，边复制边计数（上限 40 MiB）、验摘要，之后只使用这份副本；读取上限 2 分钟，Windows 拒绝 UNC 等网络路径。摘要不符时直接拒绝，进行中的下载不受影响；校验通过后取代进行中的下载并安装，原来等待下载的协商改用导入结果。缓存成员损坏时自动下载不会覆盖它，只报校验失败；导入正确 ZIP 会用新解压并校验过的目录替换损坏的缓存。
 
 ```sh
 node dev/watch.mjs easytier.watch
@@ -46,7 +46,7 @@ npm test
 npm run test:direct
 ```
 
-`npm run test:direct` 会获取本平台的官方 ZIP。已有 ZIP 时可用 `EASYTIER_TEST_ZIP=/absolute/path/to/release.zip npm run test:direct`，两种方式都校验摘要。下载测试用本机 HTTP 服务模拟停滞、摘要不符和 HTTP 500，确认依次换源且错误列出每个源的原因；提供 `EASYTIER_TEST_ZIP` 时还验证经 302 回落到可用源，以及停滞的下载被手动导入取代。测试不使用公网 peers 或 STUN。它启动本机双实例，先验证四个仿真服务在正对照中均能收到并回包，然后开启 ACL 验证两方向的 TCP、UDP 探针均到不了目标服务。同一测试覆盖路由探测应答后再连入口、允许入口的 M0 认证、96 KiB payload、错误密钥、未知和撤销设备、进程退出清理，另有虚拟网段避让的单元测试。另一项测试让两端 EasyTier 在回环上直接互连、缩短退避，覆盖掉线后自动恢复、频繁掉线用最长间隔、立即重试、对端关闭直连后不重试，以及撤销后清掉重试计时器。
+`npm run test:direct` 会获取本平台的官方 ZIP。已有 ZIP 时可用 `EASYTIER_TEST_ZIP=/absolute/path/to/release.zip npm run test:direct`，两种方式都校验摘要。下载测试用本机 HTTP 服务模拟停滞、摘要不符和 HTTP 500，确认依次换源且错误列出每个源的原因；所有源都摘要不符时报永久性的 `EasyTier archive` 错误。提供 `EASYTIER_TEST_ZIP` 时还验证经 302 回落到可用源、停滞的下载被手动导入取代、缓存健康时导入不读文件，以及导入正确 ZIP 修复被改坏的缓存。测试不使用公网 peers 或 STUN。它启动本机双实例，先验证四个仿真服务在正对照中均能收到并回包，然后开启 ACL 验证两方向的 TCP、UDP 探针均到不了目标服务。同一测试覆盖路由探测应答后再连入口、允许入口的 M0 认证、96 KiB payload、错误密钥、未知和撤销设备、进程退出清理，另有虚拟网段避让的单元测试。另一项测试让两端 EasyTier 在回环上直接互连、缩短退避，覆盖掉线后自动恢复、频繁掉线用最长间隔、立即重试、对端关闭直连后不重试，以及撤销后清掉重试计时器。
 
 ## 生命周期
 
@@ -55,7 +55,7 @@ npm run test:direct
 3. 应用端口和授权仍跟随原 relay 的生命周期。链路切换不会替换端口或移动在途操作。断掉的时间线流可以从已接收的游标续订；业务请求和工具不自动重发。工具的新建流在插件日志记录 `Remote hand tool.call transport=direct` 或 `transport=relay`，日志不包含调用参数。
 4. hand 每 10 秒在直连上发一次 `ping`（5 秒超时），连续 3 次无响应即判定断开、回落 relay，不等 TCP 超时。直连关闭或 EasyTier 进程退出时立即回落。
 5. 回落后按失败类型处理，每台 brain 各自独立：
-   - 永久性失败不自动重试，`lastError` 写明原因，`directRetryAt` 省略：本机已启用但没配会合 peer、对端未启用直连或没配 peer、对端不支持直连、平台不受支持、EasyTier 文件校验失败。本机未启用直连时不提示。等本机 `direct.set` 或对端发来 `direct.changed` 再协商。
+   - 永久性失败不自动重试，`lastError` 写明原因，`directRetryAt` 省略：本机已启用但没配会合 peer、对端未启用直连或没配 peer、对端不支持直连、平台不受支持、EasyTier 文件校验失败（含所有下载源的 ZIP 都校验不符）。本机未启用直连时不提示。等本机 `direct.set` 或对端发来 `direct.changed` 再协商。
    - 其余失败（打洞或协商失败、下载失败、直连断开、EasyTier 进程退出）是临时性的，按 5 秒、15 秒、30 秒、1 分钟、2 分钟、5 分钟退避，每次 ±20% 随机抖动，上限 5 分钟。直连建立成功后退避回到起点；10 分钟内掉线 3 次及以上时直接用 5 分钟。
    - 等待期间每 10 秒检查一次本机网卡地址集合和墙钟漂移。网络变化、睡眠唤醒或用户调用 `brains.retry-direct` 时立即重试，退避回到起点。relay 重连会新建整个直连状态。协商进行中或直连已建立时，`brains.retry-direct` 不做任何事。
    - 设备撤销、relay 断开或直连关闭时，进行中的尝试和重试等待一起结束，不留后台计时器。
