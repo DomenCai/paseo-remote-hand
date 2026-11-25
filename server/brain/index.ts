@@ -22,9 +22,19 @@ const ownerSchema = z.strictObject({
   deviceId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
   handCwd: z.string(),
   handPlatform: z.enum(["darwin", "linux", "win32"]),
+  delivery: z.enum(["stdio-system", "stdio-prompt"]).optional(),
 });
 type Owner = z.infer<typeof ownerSchema>;
-type BrainApi = Pick<PaseoApi, "agents" | "providers" | "workspaces">;
+type BrainApi = Pick<PaseoApi, "agents" | "config" | "providers" | "workspaces">;
+
+function allowsProvider(access: BrainAccess, id: string) {
+  return id !== "remote-hand" && (access.providers.length === 0 || access.providers.includes(id));
+}
+
+const preferredModes = new Map([
+  ["claude", "auto"], ["codex", "full-access"], ["antigravity", "full-access"],
+  ["kimi", "auto"], ["cursor", "agent"], ["opencode", "build"],
+]);
 
 function placement(home: string, owner: Owner) {
   const userPath = absolutePath(owner.handCwd, owner.handPlatform);
@@ -34,17 +44,20 @@ function placement(home: string, owner: Owner) {
   return { project, cwd: path.join(home, "plugin-data", "remote-hand", "workspaces", owner.deviceId, `${slug}-${hash}`) };
 }
 
-function systemPrompt(handCwd: string, platform: RemoteAgentPlatform) {
+function projectContext(handCwd: string, platform: RemoteAgentPlatform) {
   return [
     `The project is on the user's hand computer (${platform}). The absolute project path is ${JSON.stringify(handCwd)}.`,
     "Your current working directory on the brain is an empty placeholder. It does not contain the project.",
   ].join("\n");
 }
 
+const toolInstructions = `Use only these tools from the ${handMcpName} MCP server for project file and command operations: ${Object.keys(handTools).join(", ")}. ` +
+  "Match these tool names even if your provider adds a server prefix or exposes them through a tool runner. Use the hand computer's absolute paths and shell syntax. If the hand disconnects or a tool result is unknown, do not retry a write, edit or command automatically.";
+
 async function catalog(paseo: BrainApi, access: BrainAccess): Promise<RemoteBrainCatalog> {
   const snapshot = await paseo.providers.snapshot();
   const allowed = snapshot.entries.filter((entry) =>
-    entry.provider !== "remote-hand" && access.providers.includes(entry.provider) && entry.enabled !== false &&
+    allowsProvider(access, entry.provider) && entry.enabled !== false &&
     (entry.status === "ready" || entry.status === "loading"));
   const results = await Promise.allSettled(allowed.map(async (entry) => {
     // 只等白名单内的 provider。brain 与 hand 同时运行时，不能等待 remote-hand 自己完成发现。
@@ -64,7 +77,7 @@ async function catalog(paseo: BrainApi, access: BrainAccess): Promise<RemoteBrai
     return { id: entry.provider, label: entry.label ?? entry.provider, models, modes, defaultMode: entry.defaultModeId ?? undefined };
   }));
   return { providers: results.flatMap((result) =>
-    result.status === "fulfilled" && result.value.models.length && result.value.modes.length ? [result.value] : []) };
+    result.status === "fulfilled" && result.value.models.length ? [result.value] : []) };
 }
 
 async function promptTurn(agent: PaseoAgentHandle, input: z.infer<typeof remoteAgentRequests["agent.prompt"]["input"]>, signal: AbortSignal) {
@@ -109,7 +122,7 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
       )) {
         callSignal.throwIfAborted();
         const event = remoteToolEvents.parse(message);
-        // 继续逐帧消费 hand 的输出；Claude 的工具结果保留完整的有界正文。
+        // 继续逐帧消费 hand 的输出；工具结果保留完整的有界正文。
         if (event.type === "result") return { text: event.text, isError: event.isError };
       }
       throw new Error("The hand ended the tool stream without returning a result.");
@@ -128,16 +141,14 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
     const owner = ownerSchema.safeParse(request.metadata[ownerKey]);
     if (!owner.success || request.purpose !== "interactive" || request.provider === "remote-hand") return;
     if (await realpath(placement(paseoHome, owner.data).cwd) !== await realpath(request.cwd)) return;
-    const lease = await mcp.issue(request.agentId, owner.data.deviceId);
-    const names = Object.keys(handTools).map((name) => `mcp__${handMcpName}__${name}`).join(", ");
+    const lease = await mcp.issue(request.agentId, owner.data.deviceId, owner.data.delivery ? "stdio" : "http");
     return {
       ...request,
       env: { ...request.env, ...lease.env },
       mcpServers: { ...request.mcpServers, [handMcpName]: lease.server },
-      appendSystemPrompt: [
-        ...(request.appendSystemPrompt ?? []),
-        `Use only these tools for project file and command operations: ${names}. Use the hand computer's absolute paths and shell syntax. If the hand disconnects or a tool result is unknown, do not retry a write, edit or command automatically.`,
-      ],
+      ...(owner.data.delivery !== "stdio-prompt" && {
+        appendSystemPrompt: [...(request.appendSystemPrompt ?? []), toolInstructions],
+      }),
     };
   }
 
@@ -168,9 +179,10 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
       const agent = (await getPaseo()).agents.ref(agentId);
       const result = await agent.refresh();
       callSignal.throwIfAborted();
-      const owner = ownerSchema.safeParse(result?.agent.metadata?.[ownerKey]);
-      if (!owner.success || owner.data.deviceId !== deviceId) throw new Error("Remote agent is not owned by this device.");
-      return agent;
+      const state = result?.agent;
+      const owner = ownerSchema.safeParse(state?.metadata?.[ownerKey]);
+      if (!state || !owner.success || owner.data.deviceId !== deviceId) throw new Error("Remote agent is not owned by this device.");
+      return { agent, state, owner: owner.data };
     }
 
     function handle<M extends RemoteAgentRequest>(method: M, handler: (
@@ -191,26 +203,42 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
         const paseo = await getPaseo();
         const provider = (await catalog(paseo, access)).providers.find(({ id }) => id === input.provider);
         if (!provider || !provider.models.some(({ id }) => id === input.model)) throw new Error("The requested provider and model are not available to this device.");
-        const modeId = input.modeId ?? provider.defaultMode ??
-          ["default", "auto"].find((id) => provider.modes.some((mode) => mode.id === id)) ?? provider.modes[0]?.id;
-        if (!modeId || !provider.modes.some(({ id }) => id === modeId)) throw new Error("Choose an available mode for this brain provider.");
-        const owner = ownerSchema.parse({ deviceId, handCwd: input.handCwd, handPlatform: input.handPlatform });
+        const { config } = await paseo.config.get();
+        const base = config.providers[input.provider]?.extends;
+        const family = typeof base === "string" ? base : input.provider;
+        // 0.17.3 的通用 ACP 不发送 system prompt；内置 Cursor 和 Copilot 也走该实现。
+        // Antigravity 的专用插件不属于这一路径，它通过 ACP 扩展发送追加指令。
+        const promptPrefix = family === "acp" || family === "cursor" || family === "copilot";
+        const preferredMode = preferredModes.get(input.provider) ?? preferredModes.get(family);
+        // 空 mode 列表表示让 provider 自己决定，例如 Grok 和 Pi。
+        const modeId = input.modeId ?? [preferredMode, provider.defaultMode].find((id) =>
+          provider.modes.some((mode) => mode.id === id));
+        const owner = ownerSchema.parse({
+          deviceId, handCwd: input.handCwd, handPlatform: input.handPlatform,
+          ...(family !== "claude" && { delivery: promptPrefix ? "stdio-prompt" : "stdio-system" }),
+        });
         const { cwd, project } = placement(paseoHome, owner);
         callSignal.throwIfAborted();
         await mkdir(cwd, { recursive: true, mode: 0o700 });
         const workspace = await paseo.workspaces.open(cwd);
         if (workspace.name !== project) await workspace.setTitle(project);
         callSignal.throwIfAborted();
+        if (!allowsProvider(access, input.provider)) throw new Error("This brain provider is no longer allowed.");
         const agent = await workspace.agents.create({
           agentId: randomUUID(), title: input.title, metadata: { [ownerKey]: owner },
-          config: { provider: `${input.provider}/${input.model}`, modeId, systemPrompt: systemPrompt(input.handCwd, input.handPlatform) },
+          config: {
+            provider: `${input.provider}/${input.model}`, modeId,
+            ...(!promptPrefix && { systemPrompt: projectContext(input.handCwd, input.handPlatform) }),
+          },
         });
         return { agentId: agent.id, modeId };
       });
       handle("agent.prompt", async (input, callSignal) => {
-        const agent = await owned(input.agentId, callSignal);
-        const provider = agent.current()?.provider;
-        if (provider === "remote-hand" || !provider || !access.providers.includes(provider)) throw new Error("This brain provider is no longer allowed.");
+        const { agent, state, owner } = await owned(input.agentId, callSignal);
+        if (!allowsProvider(access, state.provider)) throw new Error("This brain provider is no longer allowed.");
+        if (owner.delivery === "stdio-prompt" && !state.lastUserMessageAt) {
+          input = { ...input, text: `${projectContext(owner.handCwd, owner.handPlatform)}\n${toolInstructions}\n\nUser request:\n${input.text}` };
+        }
         return promptTurn(agent, input, callSignal);
       });
       handle("agent.cancel", async ({ agentId }, callSignal) => {
@@ -226,14 +254,14 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
         }
       });
       handle("agent.permission", async ({ agentId, permissionId, response }, callSignal) => {
-        const agent = await owned(agentId, callSignal);
+        const { agent } = await owned(agentId, callSignal);
         await agent.respondToPermission({ requestId: permissionId, response });
         return {};
       });
       removers.push(port.handle("agent.events", async function* (params, incoming): AsyncGenerator<RemoteAgentJson> {
         const input = remoteAgentStreams["agent.events"].input.parse(params);
         const callSignal = AbortSignal.any([signal, incoming]);
-        const agent = await owned(input.agentId, callSignal);
+        const { agent } = await owned(input.agentId, callSignal);
         for await (const event of agentEvents(agent, input, callSignal)) {
           yield toRemoteJson(remoteAgentStreams["agent.events"].event.parse(toRemoteJson(event)));
         }

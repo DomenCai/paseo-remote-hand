@@ -14,9 +14,7 @@ export default function contribute(server: PluginServerContext) {
   const agents = createBrainAgentService({ paseoHome, cancelAgent: local.cancelAgent });
   const accessPolicy = {
     get providers() {
-      const { providers } = state.current.access;
-      // M1a 仅开放已接入的 Claude；空白名单允许当前支持的全部 provider。
-      return !providers.length || providers.includes("claude") ? ["claude"] : [];
+      return state.current.access.providers;
     },
   };
   const brain = new BrainService(state, Date.now, (deviceId, port) => {

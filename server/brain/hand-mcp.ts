@@ -8,10 +8,48 @@ import { handTools, type HandToolName, type HandToolResult } from "../../shared/
 export const handMcpName = "remote-hand";
 const tokenEnv = "PASEO_REMOTE_HAND_MCP_TOKEN";
 
+// 由 provider 启动。Paseo 把插件打成单个 bundle，所以脚本随配置传入，不依赖安装路径。
+// 每行对应一个无状态 HTTP POST；取消时断开原请求，让 brain 取消在途工具调用。
+const stdioBridge = String.raw`
+const url = process.argv[1];
+const headers = {
+  'Authorization': 'Bearer ' + process.env[${JSON.stringify(tokenEnv)}],
+  'Content-Type': 'application/json',
+  'Accept': 'application/json, text/event-stream',
+};
+const pending = new Map();
+require('node:readline').createInterface({ input: process.stdin, crlfDelay: Infinity })
+  .on('line', async (line) => {
+    let message;
+    try { message = JSON.parse(line); } catch { return; }
+    if (!message || typeof message !== 'object') return;
+    if (message.method === 'notifications/cancelled') {
+      pending.get(message.params?.requestId)?.abort();
+      return;
+    }
+    const { id } = message;
+    const controller = new AbortController();
+    if (id !== undefined) pending.set(id, controller);
+    try {
+      const reply = await fetch(url, { method: 'POST', headers, body: line, signal: controller.signal, redirect: 'error' });
+      if (!reply.ok) { await reply.body?.cancel(); throw new Error('MCP HTTP ' + reply.status); }
+      if (id !== undefined) process.stdout.write(JSON.stringify(await reply.json()) + '\n');
+      else await reply.body?.cancel();
+    } catch (error) {
+      if (id !== undefined && !controller.signal.aborted) {
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32603, message: error.message } }) + '\n');
+      }
+    } finally {
+      pending.delete(id);
+    }
+  })
+  .on('close', () => { for (const controller of pending.values()) controller.abort(); });
+`;
+
 export function createHandMcp(
   call: (identity: { agentId: string; deviceId: string }, name: HandToolName, input: unknown, signal: AbortSignal) => Promise<HandToolResult>,
 ) {
-  const leases = new Map<string, { token: string; deviceId: string; lifetime: AbortController }>();
+  const leases = new Map<string, { token: string; deviceId: string; lifetime: AbortController; transport: "http" | "stdio" }>();
   let listening: Promise<number> | undefined;
   let closed = false;
 
@@ -53,7 +91,9 @@ export function createHandMcp(
         return { content: [{ type: "text", text: result.text }], isError: result.isError };
       });
     }
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined, enableJsonResponse: lease.transport === "stdio",
+    });
     res.once("close", () => { void mcp.close().catch(() => {}); });
     await mcp.connect(transport);
     if (res.destroyed) { await mcp.close(); return; }
@@ -67,7 +107,7 @@ export function createHandMcp(
   }
 
   return {
-    async issue(agentId: string, deviceId: string) {
+    async issue(agentId: string, deviceId: string, transport: "http" | "stdio") {
       if (closed) throw new Error("Remote Hand MCP is closed.");
       listening ??= new Promise<number>((resolve, reject) => {
         server.once("error", reject);
@@ -80,12 +120,24 @@ export function createHandMcp(
       if (closed) throw new Error("Remote Hand MCP is closed.");
       revoke(agentId);
       const token = randomBytes(32).toString("base64url");
-      leases.set(agentId, { token, deviceId, lifetime: new AbortController() });
+      leases.set(agentId, { token, deviceId, lifetime: new AbortController(), transport });
+      const url = `http://127.0.0.1:${port}/${encodeURIComponent(agentId)}`;
+      const env: Record<string, string> = {};
+      if (transport === "stdio") return {
+        env,
+        server: {
+          type: "stdio" as const,
+          command: process.execPath,
+          args: ["-e", stdioBridge, url],
+          env: { [tokenEnv]: token, ...(process.versions.electron && { ELECTRON_RUN_AS_NODE: "1" }) },
+        },
+      };
+      env[tokenEnv] = token;
       return {
-        env: { [tokenEnv]: token },
+        env,
         server: {
           type: "http" as const,
-          url: `http://127.0.0.1:${port}/${encodeURIComponent(agentId)}`,
+          url,
           // 0.17.3 的 Claude SDK 会将 MCP 配置放入 argv；Claude 启动后再展开 header。
           headers: { Authorization: `Bearer \${${tokenEnv}}` },
         },
