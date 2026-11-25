@@ -171,6 +171,9 @@ test("EasyTier download falls back across sources and manual import replaces a p
     /^Error: EasyTier download failed: 127\.0\.0\.1:\d+ stalled; 127\.0\.0\.1:\d+ archive SHA-256 verification failed; 127\.0\.0\.1:\d+ HTTP 500\.$/);
   assert.equal(easyTierStatus(failed).state, "failed");
   t.diagnostic("三个源依次因停滞、摘要不符、HTTP 500 失败，错误列出每个源的原因。");
+  await assert.rejects(ensureEasyTier(path.join(directory, "rejected"), { signal, sources: [`${base}/bad`, `${base}/bad`] }),
+    /^Error: EasyTier archive failed verification from every source: 127\.0\.0\.1:\d+ archive SHA-256 verification failed; 127\.0\.0\.1:\d+ archive SHA-256 verification failed\.$/);
+  t.diagnostic("所有源都摘要不符时报 EasyTier archive 开头的错误，自动重试判为永久失败。");
   if (!archivePath) return t.diagnostic("未设置 EASYTIER_TEST_ZIP，跳过成功回落与手动导入。");
 
   const fallback = path.join(directory, "fallback");
@@ -185,6 +188,17 @@ test("EasyTier download falls back across sources and manual import replaces a p
   assert.ok(await stat(await waiting));
   assert.equal(easyTierStatus(imported).state, "ready");
   t.diagnostic("下载停滞时手动导入正确 ZIP，取代下载，原等待者拿到导入结果。");
+
+  await importEasyTier(imported, path.join(directory, "moved-away.zip"));
+  t.diagnostic("缓存健康时导入直接成功，不读取已不存在的 ZIP。");
+  const core = path.join(imported, "easytier", `v${EASYTIER_VERSION}`, `${process.platform}-${process.arch}`,
+    process.platform === "win32" ? "easytier-core.exe" : "easytier-core");
+  await writeFile(core, "corrupted");
+  await assert.rejects(ensureEasyTier(imported, { signal }), /^Error: EasyTier SHA-256 verification failed\.$/);
+  await importEasyTier(imported, archivePath);
+  assert.ok(await stat(await ensureEasyTier(imported, { signal })));
+  assert.equal(easyTierStatus(imported).state, "ready");
+  t.diagnostic("缓存成员被改坏后自动安装报错；导入正确 ZIP 替换损坏缓存，之后可正常使用。");
 });
 
 test("EasyTier loopback: Noise NK, M0 device auth, bidirectional ACL block and cleanup", { timeout: 150_000 }, async (t) => {
