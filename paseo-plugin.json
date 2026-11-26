@@ -1,7 +1,13 @@
 {
   "id": "remote-hand",
   "name": "Remote hand",
-  "description": "Connects Remote hand devices through a dedicated Paseo relay endpoint.",
+  "description": "Runs an agent session on another machine running Paseo, while reads, writes and commands for your project run on this machine through an end-to-end encrypted relay.",
+  "translations": {
+    "zh-CN": {
+      "description": "让会话在另一台运行 Paseo 的机器上执行，项目的读写和命令则经端到端加密的 relay 在本机执行。"
+    }
+  },
+  "icon": "assets/icon.png",
   "requirements": {
     "paseo": ">=0.16.1"
   },
