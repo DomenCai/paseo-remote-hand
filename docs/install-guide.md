@@ -36,7 +36,7 @@ flowchart LR
 
 ### 1. 安装 Paseo
 
-两台机器都需要 Paseo **0.16.1 或更新版本**，没装的话到 <https://paseo.sh> 下载。查看版本：打开 Paseo App →「设置」→ 主机下的本机 →「概览」。
+两台机器都需要 Paseo **0.16.1 或更新版本**，没装的话到 <https://paseo.sh> 下载。查看版本：打开 Paseo App →「设置」→「关于」。
 
 ### 2. 确认电脑上有 git 和 Node
 
@@ -69,29 +69,23 @@ git --version && node --version && npm --version
 
 打开 Paseo App →「设置」，在左侧「主机」下找到本机（图里是 Macbook），点最下面的「插件」。
 
-新装的 Paseo 默认关闭插件，页面顶部会显示「xxx 上的插件已关闭」。点「开启」。
+如果页面顶部显示「xxx 上的插件已关闭」，点「开启」。新装的 Paseo 默认关闭插件。
 
 > 截图来自已经装过插件的机器。第一次安装时，下方「已安装」列表里没有 Remote hand。
 
 ![左侧插件入口和开启按钮](images/install/03-plugins-off.png)
 
-> 跳过这一步也行：通过「从来源安装」装插件时，Paseo 会顺便开启插件功能。
+### 2. 在「浏览」里找到 Remote hand
 
-### 2. 从来源安装
+Remote hand 已收录在 Paseo 官方插件注册表。点插件页上方的「浏览」，在搜索框输入 `remote hand`，找到作者为 **domencai** 的 **Remote hand**，点这一行的「安装」。
 
-点插件页右上角的「···」，选「从来源安装」。
+> 下面两张截图是英文界面，按钮位置和中文界面相同。
 
-![右上角菜单里的从来源安装](images/install/04-install-from-source-menu.png)
+![浏览页里搜索到的 Remote hand](images/install-en/04-browse-search.png)
 
-在「插件来源」输入框里**原样**粘贴：
+安装弹窗会显示作者、来源和版本。确认作者是 `domencai`；来源是 `https://github.com/DomenCai/paseo-remote-hand`，弹窗里可能被截断成「…」。黄色提示「以你在 xxx 上的权限运行」是正常的：Paseo 的插件都没有沙箱隔离。确认后点「安装」。
 
-```
-git:DomenCai/paseo-remote-hand
-```
-
-弹窗里的黄色提示「以你在 xxx 上的权限运行」是正常的：Paseo 的插件都没有沙箱隔离。确认来源无误后点「安装」。
-
-![填好插件来源的安装弹窗](images/install/05-install-dialog.png)
+![显示作者、来源和版本的安装弹窗](images/install-en/05-install-dialog.png)
 
 ### 3. 等待安装完成
 
@@ -116,7 +110,7 @@ Paseo 会先从 GitHub 下载代码，再安装依赖，通常需要 10 秒到 1
 
 ### 1. 确认模型在 brain 上能用
 
-brain 只能把 Paseo 里**已经能用**的模型提供出去。先在 brain 的 Paseo 里用 Claude 或 Codex 新建一个普通 agent，随便聊一句，确认有回复。
+brain 只能把 Paseo 里**已经能用**的模型提供出去。先在 brain 自己的 Paseo 里试一下：打开任意项目，用 Claude 或 Codex 新建一个 agent，随便聊一句，确认有回复。
 
 ### 2. 打开「已连接设备」
 
@@ -126,7 +120,7 @@ brain 只能把 Paseo 里**已经能用**的模型提供出去。先在 brain �
 
 ### 3. 邀请设备
 
-往下滚，点「邀请设备」。「设备备注」可以填对方电脑的名字，比如"工作电脑"，也可以留空。点「生成配对码」。
+往下滚到设备列表（标题也是「已连接设备」），点标题旁边的「邀请设备」；还没有配对设备时，空列表里也有一个「邀请设备」按钮。「设备备注」可以填对方电脑的名字，比如"工作电脑"，也可以留空。点「生成配对码」。
 
 ![邀请设备弹窗](images/install/08-invite-dialog.png)
 

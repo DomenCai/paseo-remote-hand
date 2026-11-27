@@ -2,7 +2,7 @@
 
 This guide walks you through installing Remote hand step by step. It takes about 10 minutes. Steps are written for macOS. To have a coding agent install it for you, send it the [agent install manual](install-agent.en.md). 中文版：[install-guide.md](install-guide.md)。
 
-> The screenshots show the Paseo UI in Chinese. The English labels are given in the text.
+> The screenshots show the English Paseo UI, except the npm error and the direct connection screenshots, which show the Chinese UI.
 
 ## What Remote hand does
 
@@ -38,7 +38,7 @@ One machine can be both a brain and a hand. **Install the plugin on both machine
 
 ### 1. Install Paseo
 
-Both machines need Paseo **0.16.1 or later**. Download it from <https://paseo.sh> if you don't have it. To check the version, open the Paseo app → **Settings** → this machine under your hosts → **Overview**.
+Both machines need Paseo **0.16.1 or later**. Download it from <https://paseo.sh> if you don't have it. To check the version, open the Paseo app → **Settings** → **About**.
 
 ### 2. Check that git and Node are installed
 
@@ -69,37 +69,29 @@ If you see `command not found`:
 
 ### 1. Open the Plugins page and turn plugins on
 
-Open the Paseo app → **Settings**. In the left sidebar, find this machine under your hosts (the screenshot shows "Macbook") and click **Plugins** at the bottom.
+Open the Paseo app → **Settings**. In the left sidebar, under **Host**, select this machine, then click **Plugins** at the bottom.
 
-A fresh Paseo install has plugins turned off, and the top of the page says "Plugins are off on …". Click **Turn on**.
+If the top of the page says "Plugins are off on …", click **Turn on**. A fresh Paseo install has plugins turned off.
 
-> The screenshots come from a machine that already had the plugin. On a first install, Remote hand is not in the **Installed** list yet.
+> The screenshot comes from a machine that already has other plugins installed.
 
-![Plugins entry in the sidebar and the Turn on button](images/install/03-plugins-off.png)
+![Plugins entry in the sidebar and the Turn on button](images/install-en/03-plugins-off.png)
 
-> You can also skip this: installing through **Install from source** turns plugins on as well.
+### 2. Find Remote hand in Browse
 
-### 2. Install from source
+Remote hand is listed in the official Paseo plugin registry. At the top of the Plugins page, click **Browse**, type `remote hand` in the search box, and find **Remote hand** by **domencai**. Click **Install** on that row.
 
-Click **···** at the top right of the Plugins page and choose **Install from source**.
+![Remote hand in the Browse search results](images/install-en/04-browse-search.png)
 
-![Install from source in the top-right menu](images/install/04-install-from-source-menu.png)
+The install dialog shows the **Author**, **Source**, and **Version**. Check that the author is `domencai`. The source is `https://github.com/DomenCai/paseo-remote-hand`, but the dialog may cut it off with "…". The yellow notice "Runs with your access on …" is expected: Paseo plugins are not sandboxed. Click **Install**.
 
-Paste this into the plugin source field **exactly as shown**:
-
-```
-git:DomenCai/paseo-remote-hand
-```
-
-The yellow notice "Runs with your access on …" is expected: Paseo plugins are not sandboxed. Once you've checked the source, click **Install**.
-
-![Install dialog with the plugin source filled in](images/install/05-install-dialog.png)
+![Install dialog with author, source and version](images/install-en/05-install-dialog.png)
 
 ### 3. Wait for the install to finish
 
 Paseo downloads the code from GitHub and then installs its dependencies. This usually takes 10 seconds to a minute. When it's done, **Remote hand** appears in the **Installed** list with its switch on.
 
-![Remote hand in the Installed list](images/install/06-installed.png)
+![Remote hand in the Installed list](images/install-en/06-installed.png)
 
 ### 4. Open the Remote hand settings
 
@@ -118,25 +110,25 @@ Do everything in this step on the **brain** (the machine that provides the model
 
 ### 1. Make sure the models work on the brain
 
-The brain can only offer models that **already work** in its Paseo. First create a regular agent with Claude or Codex in the brain's Paseo, send any message, and make sure you get a reply.
+The brain can only offer models that **already work** in its Paseo. First test it on the brain itself: open any project in the brain's Paseo, start a new agent with Claude or Codex, send any message, and make sure you get a reply.
 
 ### 2. Open Connected devices
 
 Plugins page → Remote hand → **Connected devices** tab. Check that **Status** under **Local endpoint** says **Connected**. If it says "Connecting", wait a few seconds.
 
-![Connected devices tab with the local endpoint connected](images/install/07-connected-devices-tab.png)
+![Connected devices tab with the local endpoint connected](images/install-en/07-connected-devices-tab.png)
 
 ### 3. Invite a device
 
-Scroll down and click **Invite device**. In **Device label (optional)**, you can enter the other computer's name, such as "Work laptop", or leave it empty. Click **Generate pairing code**.
+Scroll down to **Paired devices** and click **Invite device** next to it. While no device is paired, the empty list has an **Invite device** button too. In **Device label (optional)**, you can enter the other computer's name, such as "MacBook Pro", or leave it empty. Click **Generate pairing code**.
 
-![Invite device dialog](images/install/08-invite-dialog.png)
+![Invite device dialog](images/install-en/08-invite-dialog.png)
 
 ### 4. Copy the pairing code
 
 The dialog shows a code starting with `rh1.`, with the remaining time below it on the right. Click **Copy pairing code**, then **Done**.
 
-![Generated pairing code and the copy button](images/install/09-pairing-code.png)
+![Generated pairing code and the copy button](images/install-en/09-pairing-code.png)
 
 > 🔒 **The pairing code is a secret**:
 >
@@ -148,7 +140,7 @@ The dialog shows a code starting with `rh1.`, with the remaining time below it o
 
 On the **Connected devices** tab, scroll down to **Access control**. **Allow all providers** is on by default. To offer only some models, turn it off, check the providers you want to offer, and click **Save** next to **Save access control**.
 
-The same section has two more settings. **Let devices choose permission modes** is off by default, so devices can only use this machine's default mode for each provider. **Max running sessions per device** defaults to 1; idle sessions don't count.
+The same section has two more settings. **Let devices choose permission modes** is off by default, so devices can only use this machine's default mode for each provider. **Max running sessions per device** defaults to 1; idle sessions don't count. The [Step 3 screenshot](#4-connected-means-it-worked) of the brain shows this section.
 
 ---
 
@@ -160,13 +152,13 @@ Do everything in this step on the **hand** (the machine you work on), before the
 
 Plugins page → Remote hand → **Remote machines** tab, then click **Add machine**.
 
-![Remote machines tab and the add button](images/install/10-remote-machines-empty.png)
+![Remote machines tab and the add button](images/install-en/10-remote-machines-empty.png)
 
 ### 2. Paste the pairing code
 
 Paste the pairing code you copied into the box and click **Continue**.
 
-![Pasting the pairing code](images/install/11-add-paste-code.png)
+![Pasting the pairing code](images/install-en/11-add-paste-code.png)
 
 ### 3. Check the details and add the machine
 
@@ -178,15 +170,17 @@ If you see "Confirm risks before continuing", read each item and check all of th
 
 Click **Add remote machine**.
 
-![Machine details and display name](images/install/12-add-preview.png)
+![Machine details and display name](images/install-en/12-add-preview.png)
 
 ### 4. "Connected" means it worked
 
 The machine appears in the list with the status **Connected**. The line below it shows the system, the permission level, and the transport (relay).
 
-![Remote machine list showing Connected](images/install/13-remote-machine-connected.png)
+![Remote machine list showing Connected](images/install-en/13-remote-machine-connected.png)
 
-Back on the brain's **Connected devices** tab, the hand also appears in the device list as "Online".
+Back on the brain's **Connected devices** tab, the hand also appears under **Paired devices** as "Online", with the number of sessions it is running. **Access control** is below it.
+
+![The brain's Connected devices tab with a paired device and Access control](images/install-en/18-connected-devices-access.png)
 
 ---
 
@@ -194,11 +188,11 @@ Back on the brain's **Connected devices** tab, the hand also appears in the devi
 
 ### 1. Pick a remote model
 
-On the hand, open a project workspace and create a new agent. Click the model button below the input box, find **Remote Hand** in the list, expand it, and pick a model. Model names look like "brain name · provider · model", for example "1234.Mini · Codex · GPT-6.2-Sol".
+On the hand, open a project workspace and create a new agent. Click the model button below the input box, find **Remote Hand** in the list, expand it, and pick a model. Model names look like "brain name · provider · model", for example "Mac mini · Claude · Opus 5.5".
 
 Leave the mode next to it at **Use brain default** to use the default mode the brain has for that provider.
 
-![Remote Hand in the model list](images/install/14-pick-model.png)
+![Remote Hand in the model list](images/install-en/14-pick-model.png)
 
 ### 2. Try it
 
@@ -210,9 +204,7 @@ What's in this project?
 
 The timeline shows tool calls similar to `remote-hand / hand_read` (the prefix varies a little by provider, but the tool names all start with `hand_`). The paths are **this project on the hand**, which means everything works: the model thinks on the brain, and the files are read on the hand.
 
-![A remote session reading the local project](images/install/15-first-session.png)
-
-> The screenshot also shows `hand_bash` (running a command on the hand). That requires the **Full** permission level, described in the next section. The default **Restricted** level refuses to run commands.
+![A remote session reading the local project](images/install-en/15-first-session.png)
 
 ---
 
@@ -227,11 +219,14 @@ Each remote machine has a **Permission level**. On the hand, open Plugins page �
 
 Switching to **Full** asks you to confirm once more. Turn it on only for brains you trust.
 
-![Permission settings on the remote machine details page](images/install/16-policy.png)
+![Permission settings on the remote machine details page](images/install-en/16-policy.png)
 
 This page also shows:
 
 - **Authorized projects**: a project is added automatically the first time you use this machine in it. You can revoke a project here when you no longer want to authorize it.
+
+  ![Authorized projects on the remote machine details page](images/install-en/17-remote-machine-detail.png)
+
 - **Available models**: the models the brain offers you.
 
 To check that **Full** works, start a new session and ask it to run `hostname`. It should return the **hand's** machine name.

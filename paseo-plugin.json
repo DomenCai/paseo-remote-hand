@@ -8,6 +8,11 @@
     }
   },
   "icon": "assets/icon.png",
+  "media": [
+    "docs/images/install-en/15-first-session.png",
+    "docs/images/install-en/17-remote-machine-detail.png",
+    "docs/images/install-en/18-connected-devices-access.png"
+  ],
   "requirements": {
     "paseo": ">=0.16.1"
   },
