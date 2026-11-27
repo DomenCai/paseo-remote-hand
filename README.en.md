@@ -119,6 +119,7 @@ The full level lets the brain use the hand tools to access any file and shell th
 
 - The brain's native tools remain available. The plugin describes the project location and the `hand_*` tools through the system prompt or the first user message, but the model may still call the brain's native tools. The tool prefix shown in the timeline depends on the selected provider. The restricted level only constrains the hand's tools.
 - Catalogs and tool output go through the relay; regular requests and stream-open parameters have a 128 KiB frame limit. If the connection drops while a write or command is running, its result may be unknown; check the project and timeline before retrying.
+- Thinking levels can only be chosen when creating a session and can't be changed once it starts. The levels come from that model's settings on the brain; if the brain runs an older plugin version, its models show no levels and use the brain's default.
 - **Max running sessions per device** counts sessions that are starting or working on a turn; a Linux brain allows at most 2. At the limit, the device can't create a session or prompt an idle one; prompts to a session that is already running still go through. Claude has passed cross-machine acceptance testing; Codex, Antigravity, Grok, Kimi, and Pi have passed cross-machine hand file-read checks.
 
 ## State and development

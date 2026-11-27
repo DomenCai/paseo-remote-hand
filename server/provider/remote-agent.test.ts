@@ -11,6 +11,7 @@ import type { PluginHookPayload, PluginServerContext, PluginSessionOpenRequest }
 import { ProviderEventSchema, type ProviderEvent, type ProviderSessionConfig } from "@getpaseo/plugin/server/provider";
 import type { RemoteAgentPort, RemoteAgentStream } from "../../shared/remote-agent.ts";
 import { createBrainAgentService } from "../brain/index.ts";
+import { ProtocolError } from "../frames.ts";
 import { toRemoteJson } from "../remote-agent-stream.ts";
 import { createHandProvider, type HandBrain, type HandBrainDirectory } from "./index.ts";
 
@@ -643,4 +644,72 @@ test("brain limits running sessions per device, including simultaneous requests"
   restarted.attach({ deviceId: "device-1", paseo: fake.api, access, port: pair.brain });
   await eventually(() => restarted.activeSessions("device-1") === 2, "running sessions recounted on attach");
   assert.equal(restarted.activeSessions("device-2"), 1);
+});
+
+test("新建会话可选 brain 提供的思考档位，旧版 brain 的模型不带档位", { timeout: 10_000 }, async (t) => {
+  const dir = await realpath(await mkdtemp(path.join(tmpdir(), "remote-agent-thinking-test-")));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const cwd = path.join(dir, "hand");
+  await mkdir(cwd);
+  const fake = fakePaseo([{
+    provider: "codex-sub", label: "Codex", status: "ready", enabled: true, defaultModeId: "auto",
+    models: [{
+      provider: "codex-sub", id: "gpt-6.2", label: "GPT-6.2", defaultThinkingOptionId: "high",
+      thinkingOptions: [{ id: "low", label: "Low" }, { id: "high", label: "High", description: "Think longer" }],
+    }],
+    modes: [{ id: "auto", label: "Auto" }],
+  }], { "codex-sub": "codex" });
+  const service = createBrainAgentService({ paseoHome: path.join(dir, "brain"), async cancelAgent() {} });
+  t.after(service.registerHook(fake.hook));
+  t.after(service.close);
+  const pair = loopback();
+  service.attach({ deviceId: "device-1", paseo: fake.api, port: pair.brain,
+    access: { providers: [], allowDeviceModes: false, maxConcurrentPerDevice: 2 } });
+  // 旧版 brain：没有 agent.thinking，真实协议对未知方法回 invalid。
+  const old = loopback();
+  const oldCreates: unknown[] = [];
+  old.brain.handle("agent.catalog", async () => ({ providers: [{
+    id: "claude", label: "Claude", models: [{ id: "opus", label: "Opus" }], modes: [], defaultMode: undefined,
+  }] }));
+  old.brain.handle("agent.thinking", async () => { throw new ProtocolError("invalid"); });
+  old.brain.handle("agent.create", async (params) => { oldCreates.push(params); throw new ProtocolError("failure"); });
+  const hand = createHandProvider({
+    listBrains: () => [{ id: "new", name: "VPS", port: pair.hand }, { id: "old", name: "Old", port: old.hand }],
+    subscribe: () => () => {},
+    async readPolicy() { return { mode: "restricted", projects: [cwd] }; },
+    async authorizeProject() {},
+  });
+  t.after(async () => { pair.disconnect(); old.disconnect(); await hand.dispose(); });
+  const connection = await hand.registration.connect({ versions: [1], capabilities: ["prompt.message", "session.persistence"] });
+  const events: ProviderEvent[] = [];
+  connection.onEvent((event) => events.push(ProviderEventSchema.parse(event)));
+
+  await connection.send({ type: "catalog", requestId: "catalog" });
+  const catalog = events.find((event) => event.type === "catalog")!.catalog;
+  const byId = new Map(catalog.models.map((model) => [model.id, model]));
+  assert.deepEqual(byId.get("new/codex-sub/gpt-6.2")?.thinkingOptions?.map(({ id }) => id), ["low", "high"]);
+  assert.equal(byId.get("new/codex-sub/gpt-6.2")?.defaultThinkingOptionId, "high");
+  assert.equal(byId.get("new/claude-sub/claude/sonnet")?.thinkingOptions, undefined);
+  assert.equal(byId.get("old/claude/opus")?.thinkingOptions, undefined);
+
+  const config = (model: string, thinkingOption: string): ProviderSessionConfig => ({
+    cwd, model, mode: catalog.defaultMode, thinkingOption, env: {}, mcpServers: {}, settings: {}, persist: true,
+  });
+  await connection.send({ type: "session.open", requestId: "open", sessionId: "s1", history: "skip", config: config("new/codex-sub/gpt-6.2", "low") });
+  const configured = await eventually(() => events.find((event) => event.type === "session.config" && event.sessionId === "s1"), JSON.stringify(events));
+  assert.equal(configured.type === "session.config" && configured.config.thinkingOption, "low");
+  const opened = events.find((event) => event.type === "session.opened" && event.sessionId === "s1")!;
+  const { agentId, thinkingOptionId } = opened.persistence!.data as { agentId: string; thinkingOptionId?: string };
+  assert.equal(thinkingOptionId, "low");
+  assert.equal(fake.records.get(agentId)!.opts.config.thinkingOptionId, "low");
+
+  // 模型没有提供的档位不发送，旧版 brain 不会因为多出的字段拒绝新建。
+  await connection.send({ type: "session.open", requestId: "open-old", sessionId: "s2", history: "skip", config: config("old/claude/opus", "low") });
+  await eventually(() => events.some((event) => event.type === "request.failed" && event.requestId === "open-old"), JSON.stringify(events));
+  assert.equal(oldCreates.length, 1);
+  assert.equal((oldCreates[0] as { thinkingOptionId?: string }).thinkingOptionId, undefined);
+
+  await assert.rejects(pair.hand.request("agent.create", toRemoteJson({
+    provider: "codex-sub", model: "gpt-6.2", thinkingOptionId: "max", handCwd: cwd, handPlatform: process.platform,
+  })), /thinking level is not available/);
 });

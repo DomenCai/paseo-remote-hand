@@ -7,6 +7,7 @@ import {
   type RemoteAgentCursor, type RemoteAgentEvent, type RemoteAgentJson, type RemoteAgentPlatform, type RemoteAgentPort,
 } from "../../shared/remote-agent.ts";
 import { DirectLinkLost } from "../direct/selected-port.ts";
+import { ProtocolError } from "../frames.ts";
 import { executeHandTool } from "../hand-tools/index.ts";
 import { absolutePath, sameCanonicalPath } from "../hand-tools/paths.ts";
 import { errorMessage, RemoteEventQueue, remoteRequest, toRemoteJson } from "../remote-agent-stream.ts";
@@ -29,6 +30,7 @@ export interface HandBrainDirectory {
 
 const persistenceSchema = z.strictObject({
   brainId: z.string().min(1), agentId: z.string().min(1), cwd: z.string().min(1), model: z.string().min(1), modeId: z.string().min(1).optional(),
+  thinkingOptionId: z.string().min(1).optional(),
 });
 type Session = z.infer<typeof persistenceSchema> & {
   id: string;
@@ -284,11 +286,30 @@ export function createHandProvider(directory: HandBrainDirectory) {
     for (const session of sessions) drive(session);
   }
 
+  // 最近一次目录里各模型提供的档位。新建时只发送所选模型确实提供的档位，旧版 brain 的模型因此永远不带档位。
+  let thinkingByModel = new Map<string, Set<string>>();
+
   async function getCatalog() {
     const results = await Promise.allSettled(directory.listBrains().map(async ({ id, name, port }) => {
       if (!port || port.signal.aborted) return [];
-      const result = await remoteRequest(port, "agent.catalog", {}, lifetime.signal);
-      return result.providers.map((provider) => ({ brainId: id, brainName: name, ...provider }));
+      const [result, levels] = await Promise.all([
+        remoteRequest(port, "agent.catalog", {}, lifetime.signal),
+        // 旧版 brain 没有 agent.thinking，回 invalid；这时该 brain 的模型不显示档位。
+        remoteRequest(port, "agent.thinking", {}, lifetime.signal).catch((error: unknown) => {
+          if (error instanceof ProtocolError && error.code === "invalid") return { providers: [] };
+          throw error;
+        }),
+      ]);
+      return result.providers.map((provider) => {
+        const thinking = new Map(levels.providers.find(({ id }) => id === provider.id)?.models.map((model) => [model.id, model]));
+        return {
+          brainId: id, brainName: name, ...provider,
+          models: provider.models.map((model) => {
+            const level = thinking.get(model.id);
+            return level ? { ...model, thinkingOptions: level.options, defaultThinkingOptionId: level.defaultOptionId } : model;
+          }),
+        };
+      });
     }));
     const models: ProviderModel[] = [];
     const modes = new Map<string, ProviderMode>();
@@ -302,6 +323,7 @@ export function createHandProvider(directory: HandBrainDirectory) {
         for (const mode of provider.modes) if (!modes.has(mode.id)) modes.set(mode.id, mode);
       }
     }
+    thinkingByModel = new Map(models.map(({ id, thinkingOptions }) => [id, new Set(thinkingOptions?.map((option) => option.id))]));
     const defaultModel = models.find(({ isDefault }) => isDefault)?.id ?? models[0]?.id;
     // Paseo 0.17.3 会为整个 provider 自动选一个 mode；代理的默认项把决定留给选中模型所在的 brain。
     const automatic = { id: brainDefaultMode, label: "Use brain default" };
@@ -364,6 +386,9 @@ export function createHandProvider(directory: HandBrainDirectory) {
                 if (!directory.listBrains().some(({ id }) => id === data.brainId)) throw new Error("This brain is no longer paired.");
               } else {
                 const target = parseModel(input.config.model ?? (await getCatalog()).defaultModel);
+                const thinkingOptionId = input.config.thinkingOption !== undefined &&
+                  thinkingByModel.get(`${target.brainId}/${target.provider}/${target.model}`)?.has(input.config.thinkingOption)
+                  ? input.config.thinkingOption : undefined;
                 const port = bindings.get(target.brainId)?.port;
                 if (!port) throw new Error("Wait for the selected brain to reconnect before creating a session.");
                 const handPlatform = z.enum(["darwin", "linux", "win32"]).parse(process.platform) satisfies RemoteAgentPlatform;
@@ -371,7 +396,7 @@ export function createHandProvider(directory: HandBrainDirectory) {
                 const created = await remoteRequest(port, "agent.create", {
                   provider: target.provider, model: target.model, handPlatform, handCwd: cwd,
                   modeId: input.config.mode === brainDefaultMode ? undefined : input.config.mode,
-                  title: input.config.title,
+                  thinkingOptionId, title: input.config.title,
                 }, signal);
                 signal.throwIfAborted();
                 await directory.authorizeProject(target.brainId, cwd);
@@ -379,6 +404,7 @@ export function createHandProvider(directory: HandBrainDirectory) {
                   brainId: target.brainId, agentId: created.agentId, cwd,
                   model: `${target.brainId}/${target.provider}/${target.model}`,
                   ...(created.modeId !== undefined && { modeId: created.modeId }),
+                  ...(thinkingOptionId !== undefined && { thinkingOptionId }),
                 };
               }
               signal.throwIfAborted();
@@ -395,7 +421,7 @@ export function createHandProvider(directory: HandBrainDirectory) {
                 ...(capabilities.includes("session.persistence") && { persistence: { version: 1, data } }),
               });
               emit({ type: "session.config", sessionId: session.id, config: {
-                model: data.model, mode: data.modeId, models: [], modes: [], thinkingOptions: [],
+                model: data.model, mode: data.modeId, thinkingOption: data.thinkingOptionId, models: [], modes: [], thinkingOptions: [],
               } });
               drive(session);
             } catch (error) {

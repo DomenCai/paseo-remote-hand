@@ -8,7 +8,7 @@ import { handTools, type HandToolResult } from "../../shared/hand-tools.ts";
 import {
   remoteAgentRequests, remoteAgentStreams, remoteToolEvents,
   type RemoteAgentJson, type RemoteAgentPlatform, type RemoteAgentPort,
-  type RemoteAgentRequest, type RemoteBrainCatalog,
+  type RemoteAgentRequest, type RemoteBrainCatalog, type RemoteBrainThinking,
 } from "../../shared/remote-agent.ts";
 import { ProtocolError } from "../frames.ts";
 import { absolutePath } from "../hand-tools/paths.ts";
@@ -54,7 +54,8 @@ function projectContext(handCwd: string, platform: RemoteAgentPlatform) {
 const toolInstructions = `Use only these tools from the ${handMcpName} MCP server for project file and command operations: ${Object.keys(handTools).join(", ")}. ` +
   "Match these tool names even if your provider adds a server prefix or exposes them through a tool runner. Use the hand computer's absolute paths and shell syntax. If the hand disconnects or a tool result is unknown, do not retry a write, edit or command automatically.";
 
-async function catalog(paseo: BrainApi, access: BrainAccess): Promise<RemoteBrainCatalog> {
+// 目录、思考档位和新建校验共用同一份读取结果；agent.catalog 不带档位，见 shared/remote-agent.ts。
+async function providerEntries(paseo: BrainApi, access: BrainAccess) {
   const snapshot = await paseo.providers.snapshot();
   const allowed = snapshot.entries.filter((entry) =>
     allowsProvider(access, entry.provider) && entry.enabled !== false &&
@@ -67,10 +68,15 @@ async function catalog(paseo: BrainApi, access: BrainAccess): Promise<RemoteBrai
         paseo.providers.listModels(entry.provider).then((reply) => reply.models),
         paseo.providers.listModes(entry.provider).then((reply) => reply.modes),
       ]);
-    const models = (modelList ?? []).filter((model) => model.isSelectable !== false).map((m) => ({
-      id: m.id, label: m.label, description: m.description, isDefault: m.isDefault,
-      contextWindowMaxTokens: m.contextWindowMaxTokens,
-    }));
+    const models = (modelList ?? []).filter((model) => model.isSelectable !== false).map((m) => {
+      const options = (m.thinkingOptions ?? []).map(({ id, label, description }) => ({ id, label, description }));
+      const preferred = m.defaultThinkingOptionId ?? m.thinkingOptions?.find(({ isDefault }) => isDefault)?.id;
+      return {
+        id: m.id, label: m.label, description: m.description, isDefault: m.isDefault,
+        contextWindowMaxTokens: m.contextWindowMaxTokens,
+        thinking: { options, defaultOptionId: options.find(({ id }) => id === preferred)?.id },
+      };
+    });
     const modes = (modeList ?? []).map(({ id, label, description, icon, colorTier }) => ({
       id, label, description, icon, colorTier,
     }));
@@ -81,8 +87,20 @@ async function catalog(paseo: BrainApi, access: BrainAccess): Promise<RemoteBrai
       modes: access.allowDeviceModes ? modes : modes.filter(({ id }) => id === defaultMode),
     };
   }));
-  return { providers: results.flatMap((result) =>
-    result.status === "fulfilled" && result.value.models.length ? [result.value] : []) };
+  return results.flatMap((result) =>
+    result.status === "fulfilled" && result.value.models.length ? [result.value] : []);
+}
+
+async function catalog(paseo: BrainApi, access: BrainAccess): Promise<RemoteBrainCatalog> {
+  return { providers: (await providerEntries(paseo, access)).map(({ models, ...provider }) => ({
+    ...provider, models: models.map(({ thinking: _, ...model }) => model),
+  })) };
+}
+
+async function thinking(paseo: BrainApi, access: BrainAccess): Promise<RemoteBrainThinking> {
+  return { providers: (await providerEntries(paseo, access)).map(({ id, models }) => ({
+    id, models: models.filter(({ thinking }) => thinking.options.length).map(({ id, thinking }) => ({ id, ...thinking })),
+  })).filter(({ models }) => models.length) };
 }
 
 async function promptTurn(agent: PaseoAgentHandle, input: z.infer<typeof remoteAgentRequests["agent.prompt"]["input"]>, signal: AbortSignal) {
@@ -260,11 +278,15 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
 
     try {
       handle("agent.catalog", async () => catalog(await getPaseo(), access));
+      handle("agent.thinking", async () => thinking(await getPaseo(), access));
       handle("agent.create", (input, callSignal) => queued(deviceId, async () => {
         callSignal.throwIfAborted();
         const paseo = await getPaseo();
-        const provider = (await catalog(paseo, access)).providers.find(({ id }) => id === input.provider);
-        if (!provider || !provider.models.some(({ id }) => id === input.model)) throw new Error("The requested provider and model are not available to this device.");
+        const provider = (await providerEntries(paseo, access)).find(({ id }) => id === input.provider);
+        const model = provider?.models.find(({ id }) => id === input.model);
+        if (!provider || !model) throw new Error("The requested provider and model are not available to this device.");
+        if (input.thinkingOptionId !== undefined && !model.thinking.options.some(({ id }) => id === input.thinkingOptionId))
+          throw new ProtocolError("failure", "The requested thinking level is not available for this model on this brain.");
         // 目录已按 allowDeviceModes 过滤；不在其中的 mode 一律拒绝，不替设备改选。
         if (input.modeId !== undefined && !provider.modes.some(({ id }) => id === input.modeId)) {
           throw new Error(access.allowDeviceModes
@@ -294,7 +316,7 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
         const agent = await workspace.agents.create({
           agentId: randomUUID(), title: input.title, metadata: { [ownerKey]: owner },
           config: {
-            provider: `${input.provider}/${input.model}`, modeId,
+            provider: `${input.provider}/${input.model}`, modeId, thinkingOptionId: input.thinkingOptionId,
             ...(!promptPrefix && { systemPrompt: `${projectContext(input.handCwd, input.handPlatform)}\n${toolInstructions}` }),
           },
         });
