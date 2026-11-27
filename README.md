@@ -119,7 +119,7 @@ node dev/rpc.mjs brains.set-policy '{"brainId":"<brainId>","policy":"full"}'
 
 - Brain 的原生工具仍可用。插件通过系统提示或首条用户消息说明项目位置和 `hand_*` 工具；模型可能仍调用 brain 的原生工具。时间线里的工具前缀由所选 provider 决定。受限档约束的是 hand 的工具。
 - 目录和工具输出走 relay；普通请求和开流参数有 128 KiB 帧上限。断线时正在执行的写入或命令可能结果未知，先核对项目和时间线再重试。
-- 「每台设备同时运行的会话上限」只计正在启动或执行任务的会话。达到上限时，该设备新建会话或给空闲会话发消息会被拒绝；给正在运行的会话追加消息不受影响。Claude 已通过跨机验收；Codex、Antigravity、Grok、Kimi、Pi 已通过跨机 hand 文件读取验证。
+- 「每台设备同时运行的会话上限」只计正在启动或执行任务的会话，Linux 上的 brain 最多设为 2。达到上限时，该设备新建会话或给空闲会话发消息会被拒绝；给正在运行的会话追加消息不受影响。Claude 已通过跨机验收；Codex、Antigravity、Grok、Kimi、Pi 已通过跨机 hand 文件读取验证。
 
 ## 状态与开发
 

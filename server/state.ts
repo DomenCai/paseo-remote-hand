@@ -33,6 +33,12 @@ const StateSchema = z.object({
 });
 
 type State = z.infer<typeof StateSchema>;
+
+// Linux brain 多是小内存 VPS，每个 agent 进程要占几百 MB：每台设备默认 1 个运行中会话，最多 2 个。
+// 其他平台默认 2 个，不设上限。
+const isLinux = process.platform === "linux";
+export const MAX_CONCURRENT_LIMIT = isLinux ? 2 : undefined;
+const DEFAULT_MAX_CONCURRENT = isLinux ? 1 : 2;
 export type StoredBrain = State["brains"][string];
 
 export function pluginStateDir(paseoHome = resolvePaseoHome()): string {
@@ -66,7 +72,7 @@ export class StateStore {
           publicKeyB64: exportPublicKey(keys.publicKey), secretKeyB64: exportSecretKey(keys.secretKey),
         },
         devices: {}, invites: {}, brains: {}, direct: structuredClone(DEFAULT_DIRECT),
-        access: { providers: [], allowDeviceModes: false, maxConcurrentPerDevice: 1 },
+        access: { providers: [], allowDeviceModes: false, maxConcurrentPerDevice: DEFAULT_MAX_CONCURRENT },
       };
       this.#save(this.#state);
     }

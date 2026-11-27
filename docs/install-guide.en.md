@@ -140,7 +140,7 @@ The dialog shows a code starting with `rh1.`, with the remaining time below it o
 
 On the **Connected devices** tab, scroll down to **Access control**. **Allow all providers** is on by default. To offer only some models, turn it off, check the providers you want to offer, and click **Save** next to **Save access control**.
 
-The same section has two more settings. **Let devices choose permission modes** is off by default, so devices can only use this machine's default mode for each provider. **Max running sessions per device** defaults to 1; idle sessions don't count. The [Step 3 screenshot](#4-connected-means-it-worked) of the brain shows this section.
+The same section has two more settings. **Let devices choose permission modes** is off by default, so devices can only use this machine's default mode for each provider. **Max running sessions per device** defaults to 1 on Linux, with a maximum of 2, and to 2 on other systems; idle sessions don't count. The [Step 3 screenshot](#4-connected-means-it-worked) of the brain shows this section.
 
 ---
 

@@ -12,7 +12,7 @@ import { ProtocolError, validate } from "./frames.ts";
 import type { ConnectionPort, Peer } from "./protocol.ts";
 import { startRelay } from "./relay.ts";
 import { Snapshots } from "./snapshots.ts";
-import type { StateStore } from "./state.ts";
+import { MAX_CONCURRENT_LIMIT, type StateStore } from "./state.ts";
 
 const AUTH_TTL_MS = 15_000;
 const ENROLLMENT_SESSION_MS = 30_000;
@@ -164,11 +164,16 @@ export class BrainService {
     this.snapshots.changed();
   }
 
+  // 读取时也套用上限：此前在 Linux 上手动设过更大值的状态文件同样受限。
   access(): Access {
-    return this.#store.current.access;
+    const access = this.#store.current.access;
+    if (MAX_CONCURRENT_LIMIT === undefined || access.maxConcurrentPerDevice <= MAX_CONCURRENT_LIMIT) return access;
+    return { ...access, maxConcurrentPerDevice: MAX_CONCURRENT_LIMIT };
   }
 
   setAccess(access: Access): void {
+    if (MAX_CONCURRENT_LIMIT !== undefined && access.maxConcurrentPerDevice > MAX_CONCURRENT_LIMIT)
+      throw new Error(`This brain runs on Linux and allows at most ${MAX_CONCURRENT_LIMIT} running sessions per device.`);
     this.#store.update((state) => { state.access = access; });
   }
 

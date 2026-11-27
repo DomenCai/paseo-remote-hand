@@ -18,7 +18,7 @@ export default function contribute(server: PluginServerContext) {
   const accessPolicy = {
     get providers() { return state.current.access.providers; },
     get allowDeviceModes() { return state.current.access.allowDeviceModes; },
-    get maxConcurrentPerDevice() { return state.current.access.maxConcurrentPerDevice; },
+    get maxConcurrentPerDevice() { return brain.access().maxConcurrentPerDevice; },
   };
   const brain = new BrainService(state, Date.now, (deviceId, port) => {
     agents.attach({ deviceId, paseo: local.api, access: accessPolicy, port });
