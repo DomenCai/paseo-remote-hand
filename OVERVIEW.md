@@ -16,7 +16,7 @@ The [README](https://github.com/DomenCai/paseo-remote-hand#readme) and the [illu
 - **Connected devices** lists paired devices, whether they are online and how many sessions each is running. You can revoke a device at any time.
 - **Allowed providers** limits which providers paired devices can use. By default all providers are allowed.
 - **Let devices choose permission modes** is off by default. While it is off, a device can only use the brain's default mode for each provider. When it is on, a device can pick any mode the provider offers, including full access.
-- **Max running sessions per device** limits how many sessions from one device can start or work at the same time. Idle sessions do not count.
+- **Max running sessions per device** limits how many sessions from one device can start or work at the same time. Idle sessions do not count. The default is 1 on a Linux brain, which allows at most 2, and 2 on other systems.
 
 ## Controls on the hand
 
