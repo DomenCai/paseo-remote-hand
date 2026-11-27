@@ -20,7 +20,8 @@ const frameSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("request"), id: RequestIdSchema, method: MethodSchema, payload: z.unknown() }),
   z.object({ type: z.literal("request.cancel"), id: RequestIdSchema }),
   z.object({ type: z.literal("response"), id: RequestIdSchema, payload: z.unknown() }),
-  z.object({ type: z.literal("error"), id: RequestIdSchema, code: ErrorCodeSchema }),
+  // message 是可选的，旧版收到时会忽略。
+  z.object({ type: z.literal("error"), id: RequestIdSchema, code: ErrorCodeSchema, message: z.string().max(500).optional() }),
   z.object({ type: z.literal("revoked") }),
   ...streamFrame,
 ]);
@@ -170,7 +171,7 @@ export class Peer {
           const pending = this.#pending.get(frame.id);
           if (!pending) return;
           pending.cleanup();
-          if (frame.type === "error") pending.reject(new ProtocolError(frame.code));
+          if (frame.type === "error") pending.reject(new ProtocolError(frame.code, frame.message));
           else pending.resolve(frame.payload);
           return;
         }
@@ -310,7 +311,10 @@ export class Peer {
         }
         response = { type: "response", id: frame.id, payload };
       } catch (error) {
-        response = { type: "error", id: frame.id, code: error instanceof ProtocolError ? error.code : "failure" };
+        // ProtocolError 的文字由插件自己写，可以给对端看；其他异常可能带本机路径等细节，只回 failure。
+        response = error instanceof ProtocolError
+          ? { type: "error", id: frame.id, code: error.code, message: error.message }
+          : { type: "error", id: frame.id, code: "failure" };
       }
       if (!this.#failure && !stop.signal.aborted) {
         try {

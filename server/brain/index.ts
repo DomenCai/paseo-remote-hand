@@ -10,6 +10,7 @@ import {
   type RemoteAgentJson, type RemoteAgentPlatform, type RemoteAgentPort,
   type RemoteAgentRequest, type RemoteBrainCatalog,
 } from "../../shared/remote-agent.ts";
+import { ProtocolError } from "../frames.ts";
 import { absolutePath } from "../hand-tools/paths.ts";
 import { errorMessage, toRemoteJson } from "../remote-agent-stream.ts";
 import { createHandMcp, handMcpName } from "./hand-mcp.ts";
@@ -231,7 +232,7 @@ export function createBrainAgentService({ paseoHome, cancelAgent }: {
       const max = access.maxConcurrentPerDevice;
       const running = await runningSessions(api);
       if ([...running].filter(([agentId, owner]) => owner === deviceId && agentId !== except).length >= max)
-        throw new Error(`This device already has ${max} running session(s) on this brain, the most it allows. Wait for one to finish.`);
+        throw new ProtocolError("failure", `This device already has ${max} running session(s) on this brain, the most it allows. Wait for one to finish.`);
     }
 
     async function owned(agentId: string, callSignal: AbortSignal) {

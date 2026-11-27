@@ -3,7 +3,7 @@
 Relay v2 为 brain 建立一条控制 WebSocket，为每个 hand 连接建立一条数据 WebSocket。应用帧只走强制 protected 的 Noise 通道，均为 UTF-8 JSON，单帧上限 128 KiB。
 
 - 双方首帧为 `hello { protocolVersion: 1, pluginVersion, port?: true }`。协议版本必须相同；两端均支持 `port` 且设备认证成功后才开放应用端口和流帧。
-- 请求为 `request { id, method, payload }`，成功返回 `response { id, payload }`，失败返回 `error { id, code }`。各方向独立分配递增 ID，响应可乱序，最多 32 个请求在途。取消或超时会向支持端口的对端发送 `request.cancel { id }`，并取消 handler 的 signal。连接关闭后不重放请求。
+- 请求为 `request { id, method, payload }`，成功返回 `response { id, payload }`，失败返回 `error { id, code, message? }`。`message` 只在 handler 抛出插件自己构造的 `ProtocolError` 时附上，例如 brain 的并发上限提示；其他异常一律只回 `failure`，不带文字，以免把本机细节发给对端。旧版收到 `message` 会忽略，仍显示该 code 的默认文字。各方向独立分配递增 ID，响应可乱序，最多 32 个请求在途。取消或超时会向支持端口的对端发送 `request.cancel { id }`，并取消 handler 的 signal。连接关闭后不重放请求。
 - `describe` 可在认证前读取 `brainName`、`os`、`relay`、`risks`，预览不发送邀请秘密。`auth.challenge` 返回连接专用的 32 字节随机数，有效期 15 秒，每连接只允许一次认证尝试。
 - `auth.pair` 发送 Ed25519 公钥、签名、邀请秘密、设备名和已确认风险码；`auth.resume` 只发送公钥和签名。签名覆盖 `["remote-hand/v1", purpose, fingerprint, challenge, ...]` 的 UTF-8 JSON，其中配对的 `purpose` 为 `pair`，并附邀请秘密的 SHA-256；重连使用 `reconnect`。
 - 认证后可用 `ping` 或 `self.revoke`。brain 移除授权后发 `{type:"revoked"}` 并关闭设备连接；若通知丢失，下次认证返回 `revoked`。

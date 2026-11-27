@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { setImmediate as settle } from "node:timers/promises";
 import { test, type TestContext } from "node:test";
+import { ProtocolError } from "./frames.ts";
 import { Peer } from "./protocol.ts";
 import { CONNECTION_WINDOW_BYTES, STREAM_CHUNK_BYTES, STREAM_WINDOW_BYTES } from "./streams.ts";
 
@@ -164,4 +165,12 @@ test("普通请求取消会传给对端 handler，端口仍可继续调用", { t
   stop.abort();
   await Promise.all([failed, stopped]);
   assert.deepEqual(await hand.request("echo", [1, "two"]), [1, "two"]);
+});
+
+test("插件构造的错误把说明传给对端，其他异常只回 failure", { timeout: 2000 }, async (t) => {
+  const { hand, brain } = await pair(t);
+  brain.handle("limited", async () => { throw new ProtocolError("failure", "This device already has 1 running session(s)."); });
+  brain.handle("crash", async () => { throw new Error("ENOENT /home/paseo/secret"); });
+  await assert.rejects(hand.request("limited", null), { code: "failure", message: "This device already has 1 running session(s)." });
+  await assert.rejects(hand.request("crash", null), { code: "failure", message: "The peer could not complete the Remote hand operation." });
 });
