@@ -75,7 +75,9 @@ function killWindowsTree(pid: number) {
 export async function runShell(
   input: HandToolInput<"hand_bash">,
   cwd: string,
-  { shell, signal, onOutput }: { shell?: HandShell; signal: AbortSignal; onOutput?: (chunk: string) => void },
+  { shell, env, signal, onOutput }: {
+    shell?: HandShell; env?: Readonly<Record<string, string>>; signal: AbortSignal; onOutput?: (chunk: string) => void;
+  },
 ): Promise<HandToolResult<"hand_bash">> {
   type Output = HandToolOutputs["hand_bash"];
   const windows = process.platform === "win32";
@@ -92,7 +94,7 @@ export async function runShell(
     signal.throwIfAborted();
     const result = await new Promise<Output | undefined>((resolve, reject) => {
       const child = spawn(executable, args, {
-        cwd, detached: !windows, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+        cwd, env: { ...process.env, ...env }, detached: !windows, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
       });
       const decoders = [new StringDecoder("utf8"), new StringDecoder("utf8")];
       const collected: string[] = [];

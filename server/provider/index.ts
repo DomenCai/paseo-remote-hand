@@ -34,6 +34,8 @@ const persistenceSchema = z.strictObject({
 });
 type Session = z.infer<typeof persistenceSchema> & {
   id: string;
+  // Paseo 每次打开会话都会给出，只在 hand 本机给 hand_bash 用，不持久化，也不发给 brain。
+  env: Readonly<Record<string, string>>;
   lifetime: AbortController;
   emit: (event: ProviderEvent) => void;
   opened?: string;
@@ -249,7 +251,7 @@ export function createHandProvider(directory: HandBrainDirectory) {
     if (name === "hand_write" || name === "hand_edit" || name === "hand_bash") session.inFlightMutations.add(operation);
     const finished = executeHandTool(name, input, {
       cwd: session.cwd, roots: policy.mode === "full" ? null : policy.projects,
-      allowShell: policy.mode === "full", signal,
+      allowShell: policy.mode === "full", env: session.env, signal,
       onOutput(chunk) { queue.push({ type: "output", chunk }); },
     }).then((result) => {
       queue.push(toRemoteJson(remoteToolEvents.parse({ type: "result", ...result })));
@@ -409,7 +411,7 @@ export function createHandProvider(directory: HandBrainDirectory) {
               }
               signal.throwIfAborted();
               const session: Session = {
-                ...data, id: input.sessionId, emit, lifetime: new AbortController(), opened: input.requestId,
+                ...data, id: input.sessionId, env: input.config.env, emit, lifetime: new AbortController(), opened: input.requestId,
                 history: input.history, endedTurns: new Set(), itemRevisions: new Map(), pendingPermissions: new Set(),
                 stopRequests: new Set(), stopping: false, waiting: false, inFlightMutations: new Set(),
               };

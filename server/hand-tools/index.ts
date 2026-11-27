@@ -10,6 +10,9 @@ export interface HandToolOptions {
   allowShell: boolean;
   cwd?: string;
   shell?: HandShell;
+  // 叠加在插件进程环境上，供 hand_bash 使用。Paseo 经这里传入 PASEO_AGENT_ID 等会话身份，
+  // 命令里调用 paseo 时才能认出调用者，例如给子 agent 打上父 agent 标签。
+  env?: Readonly<Record<string, string>>;
   signal: AbortSignal;
   onOutput?: (chunk: string) => void;
 }

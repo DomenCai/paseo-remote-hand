@@ -358,6 +358,10 @@ test("brain ↔ hand loopback: prompts, hand tools, permissions, stop, reconnect
   assert.match((await tool("hand_bash", { command })).text!, /Shell execution is disabled/);
   full = true;
   assert.match((await tool("hand_bash", { command })).text!, /full mode/);
+  // 会话 env 只在 hand 本机给 shell 用，brain 收不到。
+  const printEnv = process.platform === "win32" ? "Write-Output $env:HAND_SECRET" : "printf %s \"$HAND_SECRET\"";
+  assert.match((await tool("hand_bash", { command: printEnv })).text!, /never forward this/);
+  assert.doesNotMatch(JSON.stringify([...fake.records.values()].map(({ opts }) => opts)), /never forward this/);
 
   const toolCancel = new AbortController();
   const cancelCommand = process.platform === "win32"
